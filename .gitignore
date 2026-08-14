@@ -1,5 +1,7 @@
-# Build artifacts (dagu binary ~190MB, exceeds GitHub file size limit)
-/dist/
+# Build artifacts: keep the folder in the repo (see dist/README.md),
+# but never commit the ~190MB dagu binary (exceeds GitHub file size limit).
+/dist/*
+!/dist/README.md
 
 # Secrets & machine-specific runtime state (never commit)
 /.webhook-tokens/
