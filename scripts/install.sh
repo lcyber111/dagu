@@ -7,9 +7,9 @@
 # Run from the delivery package root. All machine-specific settings live in
 # ONE env file (see deploy/env.example); without one, built-in defaults are
 # used. The installer: stops an old dagu -> prepares layout/network/images ->
-# copies runtime files -> renders the dagu config from base.yaml.tpl ->
-# starts dagu (start-all) with the runtime env -> initializes webhook tokens
-# -> validates and starts the Caddy gateway.
+# copies runtime files -> renders dagu + workerd configs -> starts dagu
+# (start-all) with the runtime env -> initializes webhook tokens -> starts
+# workerd (control-plane logic) with health check -> starts the Caddy gateway.
 set -euo pipefail
 
 # ---- arguments ----
@@ -67,29 +67,31 @@ START_PAGE_REFRESH="${START_PAGE_REFRESH:-5}"
 REAP_CRON="${REAP_CRON:-* * * * *}"
 GATEWAY_UID="${GATEWAY_UID:-1000}"
 GATEWAY_GID="${GATEWAY_GID:-1000}"
+WORKERD_PORT="${WORKERD_PORT:-9090}"
 
 echo "install: root=$ROOT"
 echo "install: gateway=$GATEWAY_PUBLIC_BASE_URL network=$DOCKER_NETWORK"
 
-echo "== [1/8] layout =="
-mkdir -p "$ROOT"/{dags,data,users,archive,scripts,gateway,templates,.webhook-tokens,logs}
+echo "== [1/9] layout =="
+mkdir -p "$ROOT"/{dags,data,users,archive,scripts,gateway,templates,.webhook-tokens,logs,workerd}
 
-echo "== [2/8] stop old dagu =="
-# Stop dagu BEFORE overwriting its binary: Linux refuses to overwrite a
-# running executable ("Text file busy").
+echo "== [2/9] stop old dagu/workerd =="
+# Stop dagu/workerd BEFORE overwriting their binaries: Linux refuses to
+# overwrite a running executable ("Text file busy").
 pkill -x dagu 2>/dev/null || true
+pkill -x workerd 2>/dev/null || true
 sleep 1
 
-echo "== [3/8] docker network =="
+echo "== [3/9] docker network =="
 docker network inspect "$DOCKER_NETWORK" >/dev/null 2>&1 || docker network create "$DOCKER_NETWORK"
 
-echo "== [4/8] docker images =="
+echo "== [4/9] docker images =="
 docker image inspect smanx/opencode:1.17.10-custom-nods-python-pandas >/dev/null 2>&1 \
   || docker load -i "$OPENCODE_IMAGE_TAR"
 docker image inspect caddy:2.11.4-alpine >/dev/null 2>&1 \
   || docker load -i "$CADDY_IMAGE_TAR"
 
-echo "== [5/8] copy runtime files =="
+echo "== [5/9] copy runtime files =="
 if [ "$PKG_ROOT" != "$ROOT" ]; then
   if [ -f "$PKG_ROOT/dist/dagu-linux-amd64" ]; then
     cp -a "$PKG_ROOT/dist/dagu-linux-amd64" "$ROOT/dagu"
@@ -104,13 +106,25 @@ if [ "$PKG_ROOT" != "$ROOT" ]; then
   cp -a "$PKG_ROOT/templates.yaml" "$ROOT/templates.yaml"
   cp -a "$PKG_ROOT/deploy/base.dag.yaml" "$ROOT/base.dag.yaml"
   cp -a "$PKG_ROOT/deploy/templates/tpl-dev-v2.tar.gz" "$ROOT/templates/"
+  cp -a "$PKG_ROOT/workerd/." "$ROOT/workerd/"
+  if [ -f "$PKG_ROOT/dist/workerd-linux-amd64" ]; then
+    cp -a "$PKG_ROOT/dist/workerd-linux-amd64" "$ROOT/workerd/workerd"
+  elif [ -f "$PKG_ROOT/workerd/workerd" ]; then
+    cp -a "$PKG_ROOT/workerd/workerd" "$ROOT/workerd/workerd"
+  fi
 fi
+if [ ! -x "$ROOT/workerd/workerd" ]; then
+  echo "ERROR: workerd binary missing at $ROOT/workerd/workerd" >&2
+  echo "       put dist/workerd-linux-amd64 into the delivery package" >&2
+  exit 1
+fi
+chmod +x "$ROOT/workerd/workerd"
 mkdir -p "$ROOT/templates"
 if [ ! -d "$ROOT/templates/tpl-dev-v2/workspace" ]; then
   tar -xzf "$ROOT/templates/tpl-dev-v2.tar.gz" -C "$ROOT/templates/"
 fi
 
-echo "== [6/8] render dagu config =="
+echo "== [6/9] render dagu + workerd config =="
 # Render DAG files from templates: an absolute script path is required because
 # dagu resolves step working directories against the per-run work directory in
 # server mode, not against the DAG file location.
@@ -145,6 +159,23 @@ with open(dst, "w", encoding="utf-8") as fh:
 PYEOF
 echo "config written to $CONFIG_PATH"
 
+# Render workerd config (control-plane logic service).
+WORKERD_CONFIG="$ROOT/workerd/config.capnp"
+DAGU_API_HOST="${DAGU_API#http://}"
+python3 - "$PKG_ROOT/workerd/config.capnp.tpl" "$WORKERD_CONFIG" "$ROOT" "$DAGU_API_HOST" "$WORKERD_PORT" <<'PYEOF'
+import sys
+
+src, dst, root, api_host, port = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+with open(src, encoding="utf-8") as fh:
+    data = fh.read()
+data = data.replace("{{DAGU_ROOT}}", root)
+data = data.replace("{{DAGU_API_HOST}}", api_host)
+data = data.replace("{{WORKERD_PORT}}", port)
+with open(dst, "w", encoding="utf-8") as fh:
+    fh.write(data)
+print("workerd config written to %s" % dst)
+PYEOF
+
 # Record the effective settings for smoke-test.sh and manual restarts.
 cat > "$ROOT/.deploy-env" <<EOF
 DAGU_ROOT=$ROOT
@@ -157,9 +188,11 @@ REAP_CRON="$REAP_CRON"
 ACTIVITY_LOG=$ROOT/logs/access.log
 GATEWAY_UID=$GATEWAY_UID
 GATEWAY_GID=$GATEWAY_GID
+WORKERD_PORT=$WORKERD_PORT
+WORKERD_LOG=$ROOT/logs/workerd-access.log
 EOF
 
-echo "== [7/8] start dagu + init webhooks =="
+echo "== [7/9] start dagu + init webhooks =="
 cd "$ROOT"
 env \
   DAGU_COORDINATOR_ENABLED=false \
@@ -208,17 +241,37 @@ for dag in user_create user_delete user_start; do
   echo "webhook $dag token saved"
 done
 
-# Gateway runtime env: restart webhook token + log mount + page refresh.
+# Gateway runtime env: log mount + page refresh (token injection moved to workerd).
 cat > "$ROOT/gateway/.env" <<EOF
 LOG_DIR=$ROOT/logs
-WH_START_TOKEN=$(cat "$ROOT/.webhook-tokens/user_start.token")
 START_PAGE_REFRESH=$START_PAGE_REFRESH
 GATEWAY_UID=$GATEWAY_UID
 GATEWAY_GID=$GATEWAY_GID
 EOF
 echo "gateway env written to $ROOT/gateway/.env"
 
-echo "== [8/8] gateway =="
+echo "== [8/9] start workerd (control plane) =="
+cd "$ROOT"
+nohup "$ROOT/workerd/workerd" serve "$ROOT/workerd/config.capnp" \
+  > "$ROOT/logs/workerd-access.log" 2>&1 &
+echo $! > "$ROOT/workerd/workerd.pid"
+
+WORKERD_OK=no
+for _ in $(seq 1 10); do
+  if curl -s --max-time 2 "http://127.0.0.1:$WORKERD_PORT/api/v1/health" \
+      | grep -q '"healthy"'; then
+    WORKERD_OK=yes
+    break
+  fi
+  sleep 1
+done
+if [ "$WORKERD_OK" != "yes" ]; then
+  echo "ERROR: workerd health check failed (see $ROOT/logs/workerd-access.log)" >&2
+  exit 1
+fi
+echo "workerd healthy on 127.0.0.1:$WORKERD_PORT"
+
+echo "== [9/9] gateway =="
 cd "$ROOT/gateway"
 # 清掉旧容器（root 属主）遗留的日志，避免新容器以 GATEWAY_UID 打开时权限失败。
 rm -f "$ROOT/logs/access.log"
@@ -231,3 +284,4 @@ echo "install complete. webhook tokens:"
 for dag in user_create user_delete user_start; do
   echo "  $dag: $(cat "$ROOT/.webhook-tokens/$dag.token")"
 done
+echo "workerd: pid $(cat "$ROOT/workerd/workerd.pid") on :$WORKERD_PORT, log $ROOT/logs/workerd-access.log"

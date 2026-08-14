@@ -15,39 +15,18 @@
 	log_append uid "{http.request.cookie.ws_user}"
 
 	# =========================================================
-	# 管理接口：/api/v1/health 直接返回文档要求的格式
+	# 控制面：全部转发给 workerd（172.17.0.1:9090），业务逻辑在
+	# workerd/worker.js 里实现（/u/{uid}、health、webhooks、restart）
 	# =========================================================
-	handle /api/v1/health {
-		header Content-Type "application/json"
-		respond `{"status":"healthy","timestamp":"{time.now}"}` 200
+	handle /api/v1/* {
+		reverse_proxy 172.17.0.1:9090
 	}
 
 	# =========================================================
-	# 管理接口：webhook 转发到宿主机 dagu（172.17.0.1:18080）
+	# 租户入口 /u/{uid}：转发给 workerd 写 Cookie 并 302 到 /
 	# =========================================================
-	handle /api/v1/webhooks/* {
-		reverse_proxy 172.17.0.1:18080
-	}
-
-	# =========================================================
-	# 内部接口：启动页触发的容器恢复 -> dagu user_start webhook
-	# =========================================================
-	# 浏览器只带 Cookie 和 {"payload":{"uid":"..."}} JSON，webhook token 由
-	# Caddy 从环境变量注入，不会暴露给页面。
-	handle /api/v1/restart/* {
-		rewrite * /api/v1/webhooks/user_start
-		reverse_proxy 172.17.0.1:18080 {
-			header_up Authorization "Bearer {env.WH_START_TOKEN}"
-		}
-	}
-
-	# =========================================================
-	# 规则 1：租户入口匹配 (例: http://IP:9088/u/user01)
-	# =========================================================
-	@tenant_entry path_regexp entry ^/u/([a-zA-Z0-9_.-]+)(/.*)?$
-	handle @tenant_entry {
-		header Set-Cookie "ws_user={re.entry.1}; Path=/; SameSite=Lax; HttpOnly"
-		redir * / 302
+	handle /u/* {
+		reverse_proxy 172.17.0.1:9090
 	}
 
 	# =========================================================

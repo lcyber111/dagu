@@ -25,6 +25,7 @@ bash scripts/install.sh --env env
 | `REAP_CRON` | `reap_idle` 定时 cron（5 段式，默认每分钟） |
 | `STOP_TIMEOUT` | `docker stop -t` 超时（秒，默认 30） |
 | `START_PAGE_REFRESH` | 启动页自动刷新间隔（秒，默认 5） |
+| `WORKERD_PORT` | workerd 控制面服务监听端口（默认 9090） |
 | `GATEWAY_UID` / `GATEWAY_GID` | Caddy 容器运行 uid/gid（默认 1000，需与部署用户一致，保证活动日志可读） |
 
 ## 机制说明
@@ -40,6 +41,10 @@ bash scripts/install.sh --env env
 - install.sh 会在覆盖 dagu 二进制**之前**停掉旧进程，避免 "Text file busy"。
 - install.sh 启动 dagu 时注入运行环境（DAGU_GATE_ROOT、GATEWAY_PUBLIC_BASE_URL
   等），并把生效配置写入 `$DAGU_ROOT/.deploy-env` 供 smoke-test 使用。
+- workerd 控制面服务：`workerd/config.capnp.tpl` 由 install.sh 渲染为
+  `$DAGU_ROOT/workerd/config.capnp`（注入 DAGU_ROOT、DAGU_API 地址、WORKERD_PORT），
+  与 `worker.js` 一起随交付包提供；二进制 `dist/workerd-linux-amd64` 缺失时
+  install.sh 会报错退出。workerd 以裸进程运行，健康检查失败同样报错退出。
 - 空闲回收与按需恢复（`user_start` / `reap_idle`、启动页、活动日志）的详细说明
   见 `deploy/README.md` 的「空闲回收与按需恢复」章节。
 

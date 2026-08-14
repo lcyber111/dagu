@@ -12,8 +12,6 @@ services:
       # 访问日志目录（宿主机路径由 install.sh 写入 gateway/.env 的 LOG_DIR）
       - ${LOG_DIR:-./logs}:/logs
     environment:
-      # 恢复 webhook token，install.sh 写入 gateway/.env；不设则拒绝启动
-      WH_START_TOKEN: ${WH_START_TOKEN:?set WH_START_TOKEN in gateway/.env}
       START_PAGE_REFRESH: ${START_PAGE_REFRESH:-5}
     networks:
       - dagu-net

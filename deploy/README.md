@@ -5,10 +5,12 @@
 | 内容 | 位置 | 说明 |
 | --- | --- | --- |
 | dagu 二进制 | `dist/dagu-linux-amd64` | Linux amd64，交叉编译自 dagu-main |
+| workerd 二进制 | `dist/workerd-linux-amd64` | 控制面逻辑服务运行时（Cloudflare 开源 JS 运行时） |
 | 工作流定义 | `dags/user_create.yaml`、`dags/user_delete.yaml`、`dags/user_start.yaml`、`dags/reap_idle.yaml` | 创建/删除/恢复用户环境 + 空闲回收 |
 | 模板清单 | `templates.yaml` | `template_id` → 镜像/workspace/opencode 配置/默认资源 |
 | 模板数据 | `deploy/templates/tpl-dev-v2.tar.gz` | workspace + opencode.json |
-| 网关配置 | `gateway/Caddyfile` + `gateway/docker-compose.yml` | Caddy 网关（9088）：用户路由、webhook 转发、活动日志、启动页与恢复路由 |
+| 网关配置 | `gateway/Caddyfile` + `gateway/docker-compose.yml` | Caddy 网关（9088）：数据面代理、活动日志、启动页 |
+| 控制面逻辑 | `workerd/config.capnp.tpl` + `workerd/worker.js` | workerd（9090）：`/u/{uid}`、health、webhook 鉴权转发、restart |
 | 活动日志 | 安装后生成于 `logs/access.log` | Caddy JSON 访问日志（含 `uid` 字段），供 `reap_idle` 判定活动 |
 | 运行脚本 | `scripts/create_user.sh`、`scripts/delete_user.sh`、`scripts/start_user.sh`、`scripts/reap_idle.sh` | 工作流调用的容器操作 |
 | dagu 配置 | `deploy/base.yaml`、`deploy/base.dag.yaml` | 扁平 schema；DAG 基础配置与 CLI 配置分离 |
@@ -25,7 +27,7 @@
    ```bash
    bash scripts/install.sh
    ```
-   安装脚本会：建目录 → 建 `dagu-net` 网络 → 加载镜像 → 拷贝运行文件 → 写 dagu 配置 → 启动 dagu（start-all）→ 初始化 webhook token（存 `.webhook-tokens/`）→ 校验并启动 Caddy 网关。
+   安装脚本会：建目录 → 建 `dagu-net` 网络 → 加载镜像 → 拷贝运行文件 → 写 dagu 与 workerd 配置 → 启动 dagu（start-all）→ 初始化 webhook token（存 `.webhook-tokens/`）→ 启动 workerd 并健康检查 → 校验并启动 Caddy 网关。
 3. 查看 webhook token 并配置到门户侧：
    ```bash
    cat /home/li/dagu/dagu-gate/.webhook-tokens/user_create.token
@@ -38,7 +40,21 @@
 - `POST /webhooks/user_delete`：Bearer token；body `{"uid","force","archive_data"}`
 - `GET /health`：`{"status":"healthy","timestamp":...}`
 - 用户访问入口：`http://<IP>:9088/u/{uid}`（写 `ws_user` Cookie 后路由到用户容器 4096）
-- `POST /api/v1/restart/{uid}`（内部接口）：启动页 JS 触发容器恢复，Caddy 注入 token 后转发 `user_start` webhook
+- `POST /api/v1/restart/{uid}`（内部接口）：启动页 JS 触发容器恢复，workerd 注入 token 后转发 `user_start` webhook
+
+## 架构：Caddy 数据面 + workerd 控制面
+
+```
+浏览器 → Caddy(:9088) ── 数据面（用户容器流量、WS/SSE、启动页、401 兜底、活动日志）
+                     └── 控制面（/u/*、/api/v1/*）→ workerd(:9090) → dagu
+```
+
+- Caddy 只做转发和代理，业务判断逻辑（写 Cookie、302、webhook 鉴权、token 注入）全部在
+  `workerd/worker.js` 中实现（JS）。
+- 用户容器流量不经过 workerd，WebSocket/SSE 长连接由 Caddy 直接代理。
+- workerd 以裸进程运行（和 dagu 一样由 `install.sh` 启动），监听 `0.0.0.0:9090`，
+  日志在 `$DAGU_ROOT/logs/workerd-access.log`（仅排障用，活动判定仍以 Caddy 日志为准）。
+- webhook token 由 workerd 从 `.webhook-tokens/` 目录只读读取，不暴露给浏览器。
 
 ## 手动测试（curl 命令）
 
@@ -213,7 +229,7 @@ curl -s -X POST \
 | 10:21~16:19 | `reap_idle` 每分钟检查一次，空闲 < 6 小时，不动 |
 | 16:20 | `reap_idle`：空闲 = 6 小时 → `docker stop -t 30`，内存释放 |
 | 16:30 | 用户点 `/u/{uid}`（不算活动）→ 302 → Caddy 代理失败（502）→ 返回启动页 → 页面 JS 调 `/api/v1/restart/{uid}` |
-| 16:30~16:31 | Caddy 注入 token 转发 `user_start` webhook → `docker start` + 等 4096 就绪 |
+| 16:30~16:31 | workerd 注入 token 转发 `user_start` webhook → `docker start` + 等 4096 就绪 |
 | 16:31 | 页面自动刷新进入工作区，重新开始记录活动 |
 
 ### 相关配置（env）
@@ -258,9 +274,9 @@ curl -s -b /tmp/occ-cookie -o /dev/null -w 'page HTTP:%{http_code}\n' --max-time
 
 ## 已知限制（与接口文档的偏差）
 
-- webhook 响应体为 dagu 原生 `{dagRunId, dagName}`，不是文档示例的 `{taskId, message, status}`（Caddy 无法改写响应体，未引入翻译层）。
-- 非法 uid / 缺必填字段不会在 HTTP 层返回 400（dagu webhook 异步受理，校验发生在工作流内部并失败）；如需严格 400 语义需引入轻量校验层。
-- 未知 webhook 路径返回 **401** 而非文档的 **404**（dagu 对不存在的 webhook 触发路径统一返回 invalid webhook token）。
+- webhook 响应体为 dagu 原生 `{dagRunId, dagName}`，不是文档示例的 `{taskId, message, status}`（workerd 原样透传，未引入翻译层）。
+- webhook 请求体原样透传，不在 HTTP 层校验 uid/字段（校验发生在工作流内部并失败）；`/u/{uid}` 入口的非法 uid 由 workerd 返回 **400**。
+- 未知 webhook 路径由 workerd 返回 **404**，与文档一致。
 - `/api/v1/health` 的 `timestamp` 为 Caddy `{time.now}` 输出，非 ISO8601。
 
 ## 排障

@@ -39,11 +39,11 @@ expect 401 "$CODE" "no-token 401"
 CREATE_TOKEN=$(cat "$ROOT/.webhook-tokens/user_create.token")
 DELETE_TOKEN=$(cat "$ROOT/.webhook-tokens/user_delete.token")
 
-echo "== contract: unknown webhook path (dagu returns 401, doc says 404) =="
+echo "== contract: unknown webhook path (workerd returns 404) =="
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
   -H "Authorization: Bearer $CREATE_TOKEN" -H 'Content-Type: application/json' \
   -d '{}' "$GW_BASE/api/v1/webhooks/not_exist")
-expect 401 "$CODE" "unknown path 401 (documented deviation)"
+expect 404 "$CODE" "unknown path 404"
 
 echo "== flow: create via gateway =="
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
@@ -71,6 +71,13 @@ CODE=$(curl -s -b "$COOKIE_JAR" -o /dev/null -w '%{http_code}' --max-time 15 "$G
 expect 200 "$CODE" "workspace page 200"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "$GW_BASE/")
 expect 401 "$CODE" "no-cookie 401"
+
+echo "== flow: control plane went through workerd =="
+WORKERD_LOG="${WORKERD_LOG:-$ROOT/logs/workerd-access.log}"
+[ -f "$WORKERD_LOG" ] || fail "workerd log missing: $WORKERD_LOG"
+grep -q "302 /u/$UID_TEST" "$WORKERD_LOG" || fail "workerd did not handle /u/$UID_TEST"
+grep -q "webhook user_create" "$WORKERD_LOG" || fail "workerd did not forward user_create"
+echo "  ok   control plane requests handled by workerd"
 
 echo "== flow: idle reclaim -> starting page -> restart =="
 # Negative check: a recently active container must NOT be reaped.
