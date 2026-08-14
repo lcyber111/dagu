@@ -1,0 +1,2 @@
+# Placeholder: keeps the dags/ directory in the repository.
+# Rendered DAG files are generated here by scripts/install.sh on deploy.
