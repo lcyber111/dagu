@@ -30,8 +30,8 @@
    安装脚本会：建目录 → 建 `dagu-net` 网络 → 加载镜像 → 拷贝运行文件 → 写 dagu 与 workerd 配置 → 启动 dagu（start-all）→ 初始化 webhook token（存 `.webhook-tokens/`）→ 启动 workerd 并健康检查 → 校验并启动 Caddy 网关。
 3. 查看 webhook token 并配置到门户侧：
    ```bash
-   cat /home/li/dagu/dagu-gate/.webhook-tokens/user_create.token
-   cat /home/li/dagu/dagu-gate/.webhook-tokens/user_delete.token
+   cat /home/li/dagu-run/.webhook-tokens/user_create.token
+   cat /home/li/dagu-run/.webhook-tokens/user_delete.token
    ```
 
 ## 接口（门户视角，Base URL `http://<IP>:9088/api/v1`）
@@ -63,7 +63,7 @@
 - 网关入口（门户视角）：`http://192.168.252.131:9088`
 - dagu 管理接口（宿主机）：`http://172.17.0.1:18080`
 - 管理员账号：`admin` / `dagu-gate-2026`
-- webhook token 文件（VM 上）：`/home/li/dagu/dagu-gate/.webhook-tokens/user_create.token`、`user_delete.token`
+- webhook token 文件（VM 上）：`/home/li/dagu-run/.webhook-tokens/user_create.token`、`user_delete.token`
 
 约定：以下命令在 VM（192.168.252.131）的 bash 里执行；uid 格式 `^[A-Za-z0-9_-]{1,64}$`（如 `usr_10086`）；创建用户是异步的——接口立即返回 200，容器在后台创建（约 30~60 秒就绪）。
 
@@ -95,7 +95,7 @@ ADMIN_TOKEN=$(curl -s -X POST http://172.17.0.1:18080/api/v1/auth/login \
 ### 2) 注册新用户（触发 user_create 工作流）
 
 ```bash
-CREATE_TOKEN=$(cat /home/li/dagu/dagu-gate/.webhook-tokens/user_create.token)
+CREATE_TOKEN=$(cat /home/li/dagu-run/.webhook-tokens/user_create.token)
 
 curl -s -w '\nHTTP:%{http_code}\n' -X POST \
   http://192.168.252.131:9088/api/v1/webhooks/user_create \
@@ -161,7 +161,7 @@ curl -s -o /dev/null -w 'no-cookie HTTP:%{http_code}\n' \
 ### 4) 删除用户（触发 user_delete 工作流）
 
 ```bash
-DELETE_TOKEN=$(cat /home/li/dagu/dagu-gate/.webhook-tokens/user_delete.token)
+DELETE_TOKEN=$(cat /home/li/dagu-run/.webhook-tokens/user_delete.token)
 
 curl -s -w '\nHTTP:%{http_code}\n' -X POST \
   http://192.168.252.131:9088/api/v1/webhooks/user_delete \
@@ -179,9 +179,9 @@ curl -s -w '\nHTTP:%{http_code}\n' -X POST \
 # 容器应不存在
 docker ps -a | grep dagu-u-usr_test01 || echo "容器已删除"
 # 用户数据目录应不存在
-ls /home/li/dagu/dagu-gate/users/usr_test01 2>/dev/null || echo "用户目录已删除"
+ls /home/li/dagu-run/users/usr_test01 2>/dev/null || echo "用户目录已删除"
 # 归档文件应存在（archive_data=true 时）
-ls -1 /home/li/dagu/dagu-gate/archive/ | tail -3
+ls -1 /home/li/dagu-run/archive/ | tail -3
 ```
 
 ### 5) 重新生成 webhook token（可选，token 泄露时用）
@@ -197,7 +197,7 @@ curl -s -X POST \
   http://172.17.0.1:18080/api/v1/dags/user_create/webhook
 
 # 返回的 token 只在这次显示，记得保存：
-# echo "<新token>" > /home/li/dagu/dagu-gate/.webhook-tokens/user_create.token
+# echo "<新token>" > /home/li/dagu-run/.webhook-tokens/user_create.token
 ```
 
 ## 空闲回收与按需恢复

@@ -49,7 +49,7 @@ if [ -n "$ENV_FILE" ]; then
   set +a
 fi
 
-ROOT="${DAGU_ROOT:-/home/li/dagu/dagu-gate}"
+ROOT="${DAGU_ROOT:-/home/li/dagu-run}"
 CONFIG_PATH="${DAGU_CONFIG:-$ROOT/.config/dagu/base.yaml}"
 GATEWAY_PUBLIC_BASE_URL="${GATEWAY_PUBLIC_BASE_URL:-http://127.0.0.1:9088}"
 DOCKER_NETWORK="${DOCKER_NETWORK:-dagu-net}"
