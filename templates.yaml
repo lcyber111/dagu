@@ -1,0 +1,20 @@
+# Template registry for dagu-gate.
+# Each template maps a template_id to the image, workspace template directory,
+# opencode config template, project path inside the workspace, and default
+# resource limits (cpu_limit / memory_limit).
+#
+# FORMAT CONSTRAINT (parsed by bash in scripts/create_user.sh and delete_user.sh):
+#   - templates listed under the `templates:` key with 2-space indentation
+#   - fields indented with 4 spaces, one `key: value` per line
+# Keep this shape; any other YAML feature is ignored by the parser.
+
+templates:
+  tpl-dev-v2:
+    image: smanx/opencode:1.17.10-custom-nods-python-pandas
+    # Paths are relative to the deployment root (DAGU_GATE_ROOT) and are
+    # resolved by scripts/create_user.sh at runtime.
+    workspace_dir: templates/tpl-dev-v2/workspace
+    opencode_config: templates/tpl-dev-v2/opencode.json
+    project_relative_path: version0802/agents_gen
+    default_cpu: "2"
+    default_memory: "4Gi"

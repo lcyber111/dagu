@@ -1,0 +1,26 @@
+# Build artifacts (dagu binary ~190MB, exceeds GitHub file size limit)
+/dist/
+
+# Secrets & machine-specific runtime state (never commit)
+/.webhook-tokens/
+/gateway/.env
+/.deploy-env
+/env
+/server.log
+/server.pid
+
+# Runtime data (created on the target host by scripts/install.sh)
+/logs/
+/users/
+/data/
+/archive/
+/templates/
+/dags/
+
+# OS / editor / Python
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc
+.idea/
+.vscode/

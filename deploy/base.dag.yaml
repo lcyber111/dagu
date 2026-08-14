@@ -1,0 +1,3 @@
+# Empty DAG base config for dagu-gate.
+# dagu's DAG loader parses this file as the base DAG spec; it must stay a valid,
+# empty DAG spec so webhook/DAG loading does not reject the CLI config keys.

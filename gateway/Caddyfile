@@ -1,0 +1,185 @@
+{
+	auto_https off
+	admin off
+}
+
+:9088 {
+	log {
+		output file /logs/access.log {
+			roll_size 10MiB
+			roll_keep 3
+		}
+		format json
+	}
+	# 追加 uid 字段（来自 ws_user Cookie），供 reap_idle 解析活动时间。
+	log_append uid "{http.request.cookie.ws_user}"
+
+	# =========================================================
+	# 管理接口：/api/v1/health 直接返回文档要求的格式
+	# =========================================================
+	handle /api/v1/health {
+		header Content-Type "application/json"
+		respond `{"status":"healthy","timestamp":"{time.now}"}` 200
+	}
+
+	# =========================================================
+	# 管理接口：webhook 转发到宿主机 dagu（172.17.0.1:18080）
+	# =========================================================
+	handle /api/v1/webhooks/* {
+		reverse_proxy 172.17.0.1:18080
+	}
+
+	# =========================================================
+	# 内部接口：启动页触发的容器恢复 -> dagu user_start webhook
+	# =========================================================
+	# 浏览器只带 Cookie 和 {"payload":{"uid":"..."}} JSON，webhook token 由
+	# Caddy 从环境变量注入，不会暴露给页面。
+	handle /api/v1/restart/* {
+		rewrite * /api/v1/webhooks/user_start
+		reverse_proxy 172.17.0.1:18080 {
+			header_up Authorization "Bearer {env.WH_START_TOKEN}"
+		}
+	}
+
+	# =========================================================
+	# 规则 1：租户入口匹配 (例: http://IP:9088/u/user01)
+	# =========================================================
+	@tenant_entry path_regexp entry ^/u/([a-zA-Z0-9_.-]+)(/.*)?$
+	handle @tenant_entry {
+		header Set-Cookie "ws_user={re.entry.1}; Path=/; SameSite=Lax; HttpOnly"
+		redir * / 302
+	}
+
+	# =========================================================
+	# 规则 2：网关直接响应无凭据探针
+	# =========================================================
+	handle /site.webmanifest {
+		header Content-Type "application/manifest+json"
+		respond `{"name":"OpenCode","short_name":"OpenCode","start_url":"/","display":"standalone","background_color":"#ffffff","theme_color":"#000000"}` 200
+	}
+
+	handle /favicon.ico {
+		respond 200
+	}
+
+	# =========================================================
+	# 规则 3：已带 Cookie 的所有请求（按 UID 动态路由到用户容器）
+	# =========================================================
+	@get_user header_regexp cookie_user Cookie (?:^|;\s*)ws_user=([a-zA-Z0-9_.-]+)
+	handle @get_user {
+
+		# 3a. 子应用子路径: /app-proxy/<port>/... -> dagu-u-{UID}:<port>/...
+		@appproxy_sub path_regexp appsub ^/app-proxy/([0-9]+)(/.*)$
+		handle @appproxy_sub {
+			rewrite * {re.appsub.2}
+			reverse_proxy dagu-u-{re.cookie_user.1}:{re.appsub.1} {
+				header_up Host "localhost:{re.appsub.1}"
+				header_up Origin "http://localhost:{re.appsub.1}"
+				header_up X-Real-IP {http.request.remote.host}
+				header_up X-Forwarded-For {http.request.remote.host}
+				header_up X-Forwarded-Proto {http.request.scheme}
+
+				flush_interval -1
+				transport http {
+					dial_timeout 3s
+				}
+			}
+		}
+
+		# 3b. 子应用根路径: /app-proxy/<port> -> dagu-u-{UID}:<port>/
+		@appproxy_root path_regexp approot ^/app-proxy/([0-9]+)$
+		handle @appproxy_root {
+			rewrite * /
+			reverse_proxy dagu-u-{re.cookie_user.1}:{re.approot.1} {
+				header_up Host "localhost:{re.approot.1}"
+				header_up Origin "http://localhost:{re.approot.1}"
+				header_up X-Real-IP {http.request.remote.host}
+				header_up X-Forwarded-For {http.request.remote.host}
+				header_up X-Forwarded-Proto {http.request.scheme}
+
+				flush_interval -1
+				transport http {
+					dial_timeout 3s
+				}
+			}
+		}
+
+		# 3c. 主应用：OpenCode Web -> dagu-u-{UID}:4096
+		handle {
+			reverse_proxy dagu-u-{re.cookie_user.1}:4096 {
+				header_up Host "localhost:4096"
+				header_up Origin "http://localhost:4096"
+				header_up X-Real-IP {http.request.remote.host}
+				header_up X-Forwarded-For {http.request.remote.host}
+				header_up X-Forwarded-Proto {http.request.scheme}
+
+				flush_interval -1
+				transport http {
+					dial_timeout 3s
+				}
+			}
+		}
+	}
+
+	# =========================================================
+	# 规则 4：未带 Cookie 的普通页面请求 -> 拦截提示
+	# =========================================================
+	handle {
+		header Content-Type "text/html; charset=utf-8"
+		respond "错误：未检测到有效会话，请重新从门户链接 /u/{UID} 进入工作区！" 401
+	}
+
+	# =========================================================
+	# 容器不可达（被空闲回收 / 未就绪）时显示启动页并触发恢复
+	# =========================================================
+	handle_errors {
+		@stopped expression `{err.status_code} == 502 && {http.request.cookie.ws_user} != "" && ({http.request.uri.path}.startsWith("/api/") == false)`
+		handle @stopped {
+			header Content-Type "text/html; charset=utf-8"
+			respond `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="{env.START_PAGE_REFRESH}">
+<title>正在启动</title>
+<style>
+body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:#0f1115;color:#e6e6e6;display:flex;min-height:100vh;align-items:center;justify-content:center}
+.card{max-width:480px;padding:48px 32px;text-align:center}
+.spinner{width:40px;height:40px;margin:0 auto 24px;border:3px solid #2a2f3a;border-top-color:#4c8dff;border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+h1{font-size:20px;margin:0 0 12px}
+p{font-size:14px;color:#9aa3b2;margin:0 0 8px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="spinner"></div>
+<h1>正在启动，资源重新分配中…</h1>
+<p>工作区已被闲置回收，正在为您唤醒，页面将自动刷新，请稍候。</p>
+</div>
+<script>
+(function () {
+  var uid = "{http.request.cookie.ws_user}";
+  if (!uid) return;
+  // 自愈重试：页面每 5 秒自动刷新，这里限制每 30 秒最多触发一次恢复请求；
+  // 请求失败则清除标记，下一次刷新立即重试（user_start 幂等，重复触发无害）。
+  var key = "dagu-restart-" + uid;
+  var now = Date.now();
+  var last = parseInt(sessionStorage.getItem(key) || "0", 10);
+  if (now - last < 30000) return;
+  sessionStorage.setItem(key, String(now));
+  fetch("/api/v1/restart/" + encodeURIComponent(uid), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ payload: { uid: uid } })
+  }).catch(function () {
+    sessionStorage.removeItem(key);
+  });
+})();
+</script>
+</body>
+</html>` 200
+		}
+	}
+}
