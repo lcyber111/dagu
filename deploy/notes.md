@@ -21,6 +21,11 @@
 - 创建/删除/启动/回收脚本依赖 python3 解析 JSON payload；install.sh 渲染配置也依赖 python3。
   优先用系统 python3；系统没有时自动回退到交付包 `dist/python-linux-x86_64.tar.gz`
   （便携 Python 3.12.14，解压到 `$DAGU_ROOT/python`）。dagu 本体不依赖 python3。
+- **dagu 步骤运行在隔离环境**：dagu 执行 DAG 步骤（bash 脚本）时不会继承守护进程的环境变量
+  （源码 runner.go 使用 isolatedEnv）。因此 install.sh 启动时设置的
+  `GATEWAY_PUBLIC_BASE_URL` 等配置不会自动传给脚本；create_user.sh 曾因此把网关地址
+  注入成默认值 `127.0.0.1:9088`。现在 4 个脚本会在变量为空时从 `$DAGU_GATE_ROOT/.deploy-env`
+  （install.sh 写入的生效配置）读取，保证定时/手动运行与安装配置一致。
 
 ## ticket 05 网关实测补充
 
