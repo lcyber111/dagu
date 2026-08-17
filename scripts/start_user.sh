@@ -12,6 +12,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAGU_GATE_ROOT="${DAGU_GATE_ROOT:-$(dirname "$SCRIPT_DIR")}"
 
+# dagu runs DAG steps with an isolated environment, so deployment settings
+# that install.sh recorded in .deploy-env are NOT inherited. Read them back
+# when unset so scheduled/manual runs use the same configuration as install.
+if [ -f "$DAGU_GATE_ROOT/.deploy-env" ]; then
+  if [ -z "${GATEWAY_PUBLIC_BASE_URL:-}" ]; then
+    GATEWAY_PUBLIC_BASE_URL="$(sed -n 's/^GATEWAY_PUBLIC_BASE_URL=//p' "$DAGU_GATE_ROOT/.deploy-env" | tail -1)"
+  fi
+  if [ -z "${DOCKER_NETWORK:-}" ]; then
+    DOCKER_NETWORK="$(sed -n 's/^DOCKER_NETWORK=//p' "$DAGU_GATE_ROOT/.deploy-env" | tail -1)"
+  fi
+  if [ -z "${OPENCODE_PORT:-}" ]; then
+    OPENCODE_PORT="$(sed -n 's/^OPENCODE_PORT=//p' "$DAGU_GATE_ROOT/.deploy-env" | tail -1)"
+  fi
+  if [ -z "${READINESS_TIMEOUT:-}" ]; then
+    READINESS_TIMEOUT="$(sed -n 's/^READINESS_TIMEOUT=//p' "$DAGU_GATE_ROOT/.deploy-env" | tail -1)"
+  fi
+fi
+
 # ---- python3: system interpreter first, bundled portable runtime fallback ----
 PYTHON3="${PYTHON3:-}"
 if [ -z "$PYTHON3" ] && command -v python3 >/dev/null 2>&1; then

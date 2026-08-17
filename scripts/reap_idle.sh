@@ -12,6 +12,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAGU_GATE_ROOT="${DAGU_GATE_ROOT:-$(dirname "$SCRIPT_DIR")}"
 
+# dagu runs DAG steps with an isolated environment, so deployment settings
+# that install.sh recorded in .deploy-env are NOT inherited. Read them back
+# when unset so scheduled/manual runs use the same configuration as install.
+if [ -f "$DAGU_GATE_ROOT/.deploy-env" ]; then
+  if [ -z "${ACTIVITY_LOG:-}" ]; then
+    ACTIVITY_LOG="$(sed -n 's/^ACTIVITY_LOG=//p' "$DAGU_GATE_ROOT/.deploy-env" | tail -1)"
+  fi
+  if [ -z "${IDLE_TIMEOUT_MINUTES:-}" ]; then
+    IDLE_TIMEOUT_MINUTES="$(sed -n 's/^IDLE_TIMEOUT_MINUTES=//p' "$DAGU_GATE_ROOT/.deploy-env" | tail -1)"
+  fi
+  if [ -z "${STOP_TIMEOUT:-}" ]; then
+    STOP_TIMEOUT="$(sed -n 's/^STOP_TIMEOUT=//p' "$DAGU_GATE_ROOT/.deploy-env" | tail -1)"
+  fi
+fi
+
 # ---- python3: system interpreter first, bundled portable runtime fallback ----
 PYTHON3="${PYTHON3:-}"
 if [ -z "$PYTHON3" ] && command -v python3 >/dev/null 2>&1; then
