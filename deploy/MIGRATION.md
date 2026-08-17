@@ -26,6 +26,7 @@ bash scripts/install.sh --env env
 | `STOP_TIMEOUT` | `docker stop -t` 超时（秒，默认 30） |
 | `START_PAGE_REFRESH` | 启动页自动刷新间隔（秒，默认 5） |
 | `WORKERD_PORT` | workerd 控制面服务监听端口（默认 9090） |
+| `GATEWAY_UID` / `GATEWAY_GID` | Caddy 容器运行用户（install 自动取安装用户 id -u / id -g，一般无需设置） |
 
 ## 机制说明
 

@@ -240,6 +240,7 @@ curl -s -X POST \
 | `REAP_CRON` | `* * * * *` | `reap_idle` 的 cron（5 段式，dagu v2 不支持秒字段） |
 | `STOP_TIMEOUT` | 30 | `docker stop -t` 超时（秒） |
 | `START_PAGE_REFRESH` | 5 | 启动页自动刷新间隔（秒） |
+| `GATEWAY_UID` / `GATEWAY_GID` | 自动 | Caddy 容器运行用户（install 自动取安装用户，一般无需设置） |
 
 ### 手动验证（VM 上执行）
 

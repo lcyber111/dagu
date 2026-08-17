@@ -2,6 +2,9 @@ services:
   caddy-gateway:
     image: caddy:2.11.4-alpine
     container_name: caddy-gateway
+    # 容器以安装用户的 uid/gid 运行（install.sh 自动取当前登录用户），
+    # 保证 access.log 与 dagu 同属一个用户，reap_idle 可读；未设置时默认 root。
+    user: "${GATEWAY_UID:-0}:${GATEWAY_GID:-0}"
     restart: unless-stopped
     ports:
       - "9088:9088"

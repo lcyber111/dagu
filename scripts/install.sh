@@ -66,6 +66,9 @@ STOP_TIMEOUT="${STOP_TIMEOUT:-30}"
 START_PAGE_REFRESH="${START_PAGE_REFRESH:-5}"
 REAP_CRON="${REAP_CRON:-* * * * *}"
 WORKERD_PORT="${WORKERD_PORT:-9090}"
+# Caddy 容器运行用户：默认自动取当前登录用户（用什么用户装就用什么用户跑）。
+GATEWAY_UID="${GATEWAY_UID:-$(id -u)}"
+GATEWAY_GID="${GATEWAY_GID:-$(id -g)}"
 
 echo "install: root=$ROOT"
 echo "install: gateway=$GATEWAY_PUBLIC_BASE_URL network=$DOCKER_NETWORK"
@@ -186,6 +189,8 @@ STOP_TIMEOUT=$STOP_TIMEOUT
 START_PAGE_REFRESH=$START_PAGE_REFRESH
 REAP_CRON="$REAP_CRON"
 ACTIVITY_LOG=$ROOT/logs/access.log
+GATEWAY_UID=$GATEWAY_UID
+GATEWAY_GID=$GATEWAY_GID
 WORKERD_PORT=$WORKERD_PORT
 WORKERD_LOG=$ROOT/logs/workerd-access.log
 EOF
@@ -243,6 +248,8 @@ done
 cat > "$ROOT/gateway/.env" <<EOF
 LOG_DIR=$ROOT/logs
 START_PAGE_REFRESH=$START_PAGE_REFRESH
+GATEWAY_UID=$GATEWAY_UID
+GATEWAY_GID=$GATEWAY_GID
 EOF
 echo "gateway env written to $ROOT/gateway/.env"
 
@@ -269,6 +276,8 @@ echo "workerd healthy on 127.0.0.1:$WORKERD_PORT"
 
 echo "== [9/9] gateway =="
 cd "$ROOT/gateway"
+# 日志目录归 Caddy 容器用户所有，保证 access.log 可写可读（reap_idle 依赖）。
+chown "$GATEWAY_UID:$GATEWAY_GID" "$ROOT/logs" 2>/dev/null || true
 # 清掉旧容器遗留的日志，避免新容器（root 身份）打开旧文件时权限失败。
 rm -f "$ROOT/logs/access.log"
 docker run --rm \
