@@ -36,6 +36,7 @@ Caddy (:9088)        数据面：把用户流量代理进容器；记录活动�
 
 设计上刻意不引入数据库：用户状态以“Docker 容器 + 数据目录”为准，任务日志以 dagu
 运行历史为准。这也让整个交付物保持“最少组件”——两个单二进制（dagu、workerd）
+
 + 一个 Caddy 容器，离线拷过去就能装。
 
 ## 二、技术路线为什么这么选
@@ -95,7 +96,166 @@ workerd 通过两种“绑定”拿到资源：`env.dagu`（dagu 地址，用来
 每个用户一个独立 Docker 容器，跑 OpenCode Web。创建时挂载用户的 workspace 和
 opencode 配置，用 `--cpus`/`--memory` 限制资源。
 
-## 四、各功能的实现要点与举例
+## 四、访问规则（Caddy 路由）与举例
+
+请求进入 Caddy 后，规则是**从上到下依次匹配、命中即停**。总口诀：
+**先认路径（`/api/v1`、`/u`），再认 Cookie（进谁的容器），最后才是 401 和启动页两个兜底。**
+
+### 规则 0：全局设置 + 访问日志（影响所有请求）
+
+```caddyfile
+auto_https off        # 关闭 HTTPS 自动跳转（纯 HTTP 9088 运行）
+admin off             # 关闭 Caddy 管理端口
+log_append uid "{http.request.cookie.ws_user}"
+```
+
+`log_append` 让**每个请求**都在日志里多记一个 `uid` 字段（从 Cookie 取），
+`reap_idle` 靠它判断“最后活动时间”。带 `ws_user=usr_test01` 的请求会记
+`"uid":"usr_test01"`，不带 Cookie 记空值。
+
+### 规则 1：`/api/v1/*` → 转发给 workerd
+
+```caddyfile
+handle /api/v1/* {
+    reverse_proxy 172.17.0.1:9090
+}
+```
+
+路径以 `/api/v1/` 开头一律转给 workerd（9090），与 Cookie 无关。
+
+举例：
+
+```bash
+curl http://192.168.252.131:9088/api/v1/health
+# → workerd，返回 {"status":"healthy",...}
+
+curl -X POST http://192.168.252.131:9088/api/v1/webhooks/user_create \
+  -H "Authorization: Bearer <token>"
+# → workerd，校验 token 后透传给 dagu
+
+curl -X POST http://192.168.252.131:9088/api/v1/restart/usr_test01
+# → workerd，注入 token 后转给 dagu 的 user_start
+```
+
+### 规则 2：`/u/*` → 转发给 workerd（写 Cookie + 跳转）
+
+```caddyfile
+handle /u/* {
+    reverse_proxy 172.17.0.1:9090
+}
+```
+
+举例（即使带了 Cookie，也走这条，不会直接进容器）：
+
+```bash
+curl -i http://192.168.252.131:9088/u/usr_test01
+# → workerd → 302，响应头：Location: / 和 Set-Cookie: ws_user=usr_test01
+```
+
+### 规则 3：`/site.webmanifest` → 直接返回清单
+
+PWA 站点清单，浏览器加载页面时可能请求，Caddy 直接回固定 JSON，不进容器。
+
+### 规则 4：`/favicon.ico` → 返回 200 空
+
+浏览器自动请求的网站图标，直接回 200 空响应，省得往容器转发一次。
+
+### 规则 5：带 `ws_user` Cookie → 进容器（核心规则）
+
+```caddyfile
+@get_user header_regexp cookie_user Cookie (?:^|;\s*)ws_user=([a-zA-Z0-9_.-]+)
+```
+
+Caddy 用正则从 Cookie 里抠出 uid，拼成 `dagu-u-{uid}` 转发。里面分三种情况：
+
+**5a. `/app-proxy/<端口>/<路径>` → 容器的那个端口**
+
+```bash
+curl -H "Cookie: ws_user=usr_test01" http://192.168.252.131:9088/app-proxy/8000/hello
+# → 转发到 dagu-u-usr_test01:8000，路径重写为 /hello
+```
+
+**5b. `/app-proxy/<端口>`（无尾巴）→ 容器的那个端口根路径**
+
+```bash
+curl -H "Cookie: ws_user=usr_test01" http://192.168.252.131:9088/app-proxy/8000
+# → 转发到 dagu-u-usr_test01:8000，路径重写为 /
+```
+
+**5c. 其余所有路径 → 容器 4096（OpenCode 主应用）**
+
+```bash
+curl -H "Cookie: ws_user=usr_test01" http://192.168.252.131:9088/
+curl -H "Cookie: ws_user=usr_test01" "http://192.168.252.131:9088/new-session?draftId=abc"
+curl -H "Cookie: ws_user=usr_test01" http://192.168.252.131:9088/global/health
+# 以上都到 dagu-u-usr_test01:4096（心跳轮询也走这里）
+```
+
+转发时 Caddy 还会改写 `Host: localhost:4096`、`Origin`、`X-Forwarded-*` 等请求头，
+让容器里的 OpenCode 以为请求来自本机。
+
+### 规则 6：没有 Cookie → 401
+
+```caddyfile
+handle {
+    respond "错误：未检测到有效会话，请重新从门户链接 /u/{UID} 进入工作区！" 401
+}
+```
+
+举例：
+
+```bash
+curl http://192.168.252.131:9088/
+# → 401，提示未检测到有效会话
+```
+
+### 规则 7：出错兜底 handle_errors（502 → 启动页）
+
+这条不是按路径匹配，而是**前面任何一步返回 502 时**触发，三个条件同时满足：
+
+```caddyfile
+@stopped expression `{err.status_code} == 502 && {http.request.cookie.ws_user} != "" && ({http.request.uri.path}.startsWith("/api/") == false)`
+```
+
+即：错误是 502、带了 `ws_user` Cookie、路径不是 `/api/` 开头。
+
+举例（容器被回收后用户刷新页面）：
+
+```text
+刷新 /new-session?draftId=abc（带 Cookie）
+→ 规则 5c 转发容器失败，产生 502
+→ 命中 @stopped → 返回“正在启动，资源重新分配中…”页面
+→ 页面 JS 自动调 /api/v1/restart/{uid} 触发恢复
+```
+
+### 决策顺序图
+
+```text
+请求进来
+  │
+  ├─ /api/v1/*         → workerd（规则1）
+  ├─ /u/*              → workerd（规则2）
+  ├─ /site.webmanifest → 静态 JSON（规则3）
+  ├─ /favicon.ico      → 200 空（规则4）
+  ├─ 带 ws_user Cookie（规则5）
+  │     ├─ /app-proxy/<port>/<path> → 容器:port/path（5a）
+  │     ├─ /app-proxy/<port>        → 容器:port/（5b）
+  │     └─ 其他                      → 容器:4096（5c）
+  ├─ 都没有 → 401（规则6）
+  └─ （任何一步 502）→ 启动页（规则7）
+```
+
+### 一张表总结
+
+| 路径 | 带 Cookie？ | 最终去向 | 结果 |
+| --- | --- | --- | --- |
+| `/api/v1/*` | 带或不带都行 | workerd:9090 | 控制面逻辑 |
+| `/u/xxx` | 带或不带都行 | workerd:9090 | 写 Cookie + 302 |
+| `/`、`/new-session...`、静态资源 | 带 | 容器:4096 | 工作区页面 |
+| `/app-proxy/<port>/...` | 带 | 容器:<port> | 子应用 |
+| 任意数据面路径 | 不带 | 无 | 401 |
+
+## 五、各功能的实现要点与举例
 
 ### 功能 1：创建用户（user_create）
 
@@ -200,7 +360,7 @@ WebSocket/SSE 都算）。注意 opencode 前端每 10 秒有 `/global/health` �
 
 ### 功能 5：删除用户（user_delete）
 
-**触发方式**：门户带 token 调 `POST /api/v1/webhooks/user_delete`。
+**触发方式**：门户带 token 调 `POST /api/v1/webhooks/user_delete`
 
 **流程**：
 
@@ -218,7 +378,7 @@ curl -X POST http://192.168.252.131:9088/api/v1/webhooks/user_delete \
   -d '{"uid":"usr_test01","archive_data":true}'
 ```
 
-## 五、关键约定（领域术语）
+## 六、关键约定（领域术语）
 
 | 术语 | 定义 |
 | --- | --- |
@@ -229,7 +389,7 @@ curl -X POST http://192.168.252.131:9088/api/v1/webhooks/user_delete \
 | webhook token | dagu 生成的鉴权 token，存在 `.webhook-tokens/`，门户和 workerd 用它鉴权 |
 | 就绪 | 只看 4096（OpenCode Web）端口能应答 |
 
-## 六、一次完整的用户生命周期（贯穿举例）
+## 七、一次完整的用户生命周期（贯穿举例）
 
 以 `usr_test01` 为例，串起所有功能：
 
@@ -253,7 +413,7 @@ curl -X POST http://192.168.252.131:9088/api/v1/webhooks/user_delete \
    POST /api/v1/webhooks/user_delete → 归档数据 → 删容器 → 删目录
 ```
 
-## 七、离线交付形态
+## 八、离线交付形态
 
 交付包 = 两个单二进制 + 一个 Caddy 镜像 + 脚本/模板/配置：
 
@@ -279,4 +439,3 @@ dagu-run/
 ├── logs/workerd-access.log   # workerd 日志（仅排障）
 └── .webhook-tokens/*.token   # webhook 鉴权 token
 ```
-
