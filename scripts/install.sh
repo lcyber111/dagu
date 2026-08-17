@@ -278,12 +278,13 @@ echo "== [9/9] gateway =="
 cd "$ROOT/gateway"
 # 日志目录归 Caddy 容器用户所有，保证 access.log 可写可读（reap_idle 依赖）。
 chown "$GATEWAY_UID:$GATEWAY_GID" "$ROOT/logs" 2>/dev/null || true
-# 清掉旧容器遗留的日志，避免新容器（root 身份）打开旧文件时权限失败。
+# 清掉旧日志：必须配合 --force-recreate 使用——若容器未重建，运行中的 Caddy
+# 会继续写已删除的日志文件（fd 指向 deleted inode），宿主机上永远看不到 access.log。
 rm -f "$ROOT/logs/access.log"
 docker run --rm \
   -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
   caddy:2.11.4-alpine caddy validate --config /etc/caddy/Caddyfile >/dev/null
-docker compose up -d
+docker compose up -d --force-recreate
 
 echo "install complete. webhook tokens:"
 for dag in user_create user_delete user_start; do
