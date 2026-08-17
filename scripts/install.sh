@@ -65,8 +65,6 @@ IDLE_TIMEOUT_MINUTES="${IDLE_TIMEOUT_MINUTES:-360}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-30}"
 START_PAGE_REFRESH="${START_PAGE_REFRESH:-5}"
 REAP_CRON="${REAP_CRON:-* * * * *}"
-GATEWAY_UID="${GATEWAY_UID:-1000}"
-GATEWAY_GID="${GATEWAY_GID:-1000}"
 WORKERD_PORT="${WORKERD_PORT:-9090}"
 
 echo "install: root=$ROOT"
@@ -188,8 +186,6 @@ STOP_TIMEOUT=$STOP_TIMEOUT
 START_PAGE_REFRESH=$START_PAGE_REFRESH
 REAP_CRON="$REAP_CRON"
 ACTIVITY_LOG=$ROOT/logs/access.log
-GATEWAY_UID=$GATEWAY_UID
-GATEWAY_GID=$GATEWAY_GID
 WORKERD_PORT=$WORKERD_PORT
 WORKERD_LOG=$ROOT/logs/workerd-access.log
 EOF
@@ -247,8 +243,6 @@ done
 cat > "$ROOT/gateway/.env" <<EOF
 LOG_DIR=$ROOT/logs
 START_PAGE_REFRESH=$START_PAGE_REFRESH
-GATEWAY_UID=$GATEWAY_UID
-GATEWAY_GID=$GATEWAY_GID
 EOF
 echo "gateway env written to $ROOT/gateway/.env"
 
@@ -275,7 +269,7 @@ echo "workerd healthy on 127.0.0.1:$WORKERD_PORT"
 
 echo "== [9/9] gateway =="
 cd "$ROOT/gateway"
-# 清掉旧容器（root 属主）遗留的日志，避免新容器以 GATEWAY_UID 打开时权限失败。
+# 清掉旧容器遗留的日志，避免新容器（root 身份）打开旧文件时权限失败。
 rm -f "$ROOT/logs/access.log"
 docker run --rm \
   -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \

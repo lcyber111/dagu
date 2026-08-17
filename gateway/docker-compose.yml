@@ -2,8 +2,6 @@ services:
   caddy-gateway:
     image: caddy:2.11.4-alpine
     container_name: caddy-gateway
-    # 以宿主 uid/gid 运行，保证 access.log 归宿主用户所有（reap_idle 需要读）
-    user: "${GATEWAY_UID:-1000}:${GATEWAY_GID:-1000}"
     restart: unless-stopped
     ports:
       - "9088:9088"
