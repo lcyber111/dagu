@@ -113,7 +113,9 @@ if [ "$PKG_ROOT" != "$ROOT" ]; then
     cp -a "$PKG_ROOT/workerd/workerd" "$ROOT/workerd/workerd"
   fi
 fi
-if [ ! -x "$ROOT/workerd/workerd" ]; then
+# 只检查文件是否存在：从 Windows 打包解压的二进制可能没有 x 位，
+# 下面的 chmod +x 会补上（检查放在 chmod 之前会误报 missing）。
+if [ ! -f "$ROOT/workerd/workerd" ]; then
   echo "ERROR: workerd binary missing at $ROOT/workerd/workerd" >&2
   echo "       put dist/workerd-linux-amd64 into the delivery package" >&2
   exit 1
