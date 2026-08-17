@@ -37,6 +37,19 @@
    cat /home/li/dagu-run/.webhook-tokens/user_delete.token
    ```
 
+## 端口清单
+
+| 端口 | 服务 | 监听位置 | 说明 |
+| --- | --- | --- | --- |
+| 9088 | Caddy 网关 | 宿主机 `0.0.0.0:9088` | **唯一对外发布的端口**，浏览器入口（如 `http://<IP>:9088`） |
+| 9090 | workerd 控制面 | 宿主机裸进程 `0.0.0.0:9090` | 只给 Caddy 内部转发用，不对外 |
+| 18080 | dagu 管理 API | 宿主机裸进程，仅 `172.17.0.1:18080`（docker0 网桥） | Caddy/workerd 通过 172.17.0.1 调用，对外不可达 |
+| 4096 | 用户容器 OpenCode Web | 容器内部（dagu-net 网络内） | **不映射宿主机**，Caddy 通过 `dagu-u-{uid}:4096` 访问 |
+| 80 / 443 / 2019 | caddy 容器镜像默认端口 | 容器内部 | 未发布到宿主机，与业务无关 |
+| 7010 | 历史遗留 | 无 | 已废弃，本项目不再使用 |
+
+对外只需要放行 **9088** 一个端口。注意：宿主机上若出现 4096/7010 的监听，可能是其他无关容器（例如 opencode-clean）占用，不属于本项目。
+
 ## 接口（门户视角，Base URL `http://<IP>:9088/api/v1`）
 
 - `POST /webhooks/user_create`：Bearer token；body `{"uid","username","resources":{"cpu_limit","memory_limit","template_id"}}`
