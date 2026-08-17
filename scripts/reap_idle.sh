@@ -11,6 +11,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAGU_GATE_ROOT="${DAGU_GATE_ROOT:-$(dirname "$SCRIPT_DIR")}"
+
+# ---- python3: system interpreter first, bundled portable runtime fallback ----
+PYTHON3="${PYTHON3:-}"
+if [ -z "$PYTHON3" ] && command -v python3 >/dev/null 2>&1; then
+  PYTHON3="$(command -v python3)"
+fi
+if [ -z "$PYTHON3" ] && [ -x "$DAGU_GATE_ROOT/python/bin/python3" ]; then
+  PYTHON3="$DAGU_GATE_ROOT/python/bin/python3"
+fi
+if [ -z "$PYTHON3" ]; then
+  echo "ERROR: python3 not found (install python3 or keep dist/python-linux-x86_64.tar.gz in the package)" >&2
+  exit 1
+fi
+
 ACTIVITY_LOG="${ACTIVITY_LOG:-$DAGU_GATE_ROOT/logs/access.log}"
 IDLE_TIMEOUT_MINUTES="${IDLE_TIMEOUT_MINUTES:-360}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-30}"
@@ -30,7 +44,7 @@ if [ -z "$CONTAINER_TS" ]; then
   exit 0
 fi
 
-STOP_LIST=$(python3 - "$ACTIVITY_LOG" "$IDLE_TIMEOUT_MINUTES" $CONTAINER_TS <<'PYEOF'
+STOP_LIST=$("$PYTHON3" - "$ACTIVITY_LOG" "$IDLE_TIMEOUT_MINUTES" $CONTAINER_TS <<'PYEOF'
 import json
 import re
 import sys

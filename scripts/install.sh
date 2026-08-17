@@ -122,16 +122,40 @@ if [ ! -f "$ROOT/workerd/workerd" ]; then
   exit 1
 fi
 chmod +x "$ROOT/workerd/workerd"
+
+# Portable Python for offline hosts without python3 (python-build-standalone
+# install_only_stripped). Used to render configs below and by the DAG scripts
+# to parse JSON. Extracted only when not already present (idempotent).
+if [ ! -x "$ROOT/python/bin/python3" ]; then
+  if [ -f "$PKG_ROOT/dist/python-linux-x86_64.tar.gz" ]; then
+    tar -xzf "$PKG_ROOT/dist/python-linux-x86_64.tar.gz" -C "$ROOT"
+    chmod +x "$ROOT"/python/bin/python3* 2>/dev/null || true
+  fi
+fi
+
 mkdir -p "$ROOT/templates"
 if [ ! -d "$ROOT/templates/tpl-dev-v2/workspace" ]; then
   tar -xzf "$ROOT/templates/tpl-dev-v2.tar.gz" -C "$ROOT/templates/"
 fi
 
 echo "== [6/9] render dagu + workerd config =="
+# Locate python3: system interpreter first, bundled portable runtime second.
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON3="$(command -v python3)"
+elif [ -x "$ROOT/python/bin/python3" ]; then
+  PYTHON3="$ROOT/python/bin/python3"
+else
+  echo "ERROR: python3 not found" >&2
+  echo "       install python3 (e.g. apt install python3) or keep" >&2
+  echo "       dist/python-linux-x86_64.tar.gz in the delivery package" >&2
+  exit 1
+fi
+echo "install: python3=$PYTHON3"
+
 # Render DAG files from templates: an absolute script path is required because
 # dagu resolves step working directories against the per-run work directory in
 # server mode, not against the DAG file location.
-python3 - "$PKG_ROOT/deploy/dags" "$ROOT/dags" "$ROOT" "$REAP_CRON" <<'PYEOF'
+"$PYTHON3" - "$PKG_ROOT/deploy/dags" "$ROOT/dags" "$ROOT" "$REAP_CRON" <<'PYEOF'
 import os
 import sys
 
@@ -150,7 +174,7 @@ for name in sorted(os.listdir(src_dir)):
 PYEOF
 
 mkdir -p "$(dirname "$CONFIG_PATH")"
-python3 - "$PKG_ROOT/deploy/base.yaml.tpl" "$CONFIG_PATH" "$ROOT" <<'PYEOF'
+"$PYTHON3" - "$PKG_ROOT/deploy/base.yaml.tpl" "$CONFIG_PATH" "$ROOT" <<'PYEOF'
 import sys
 
 src, dst, root = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -165,7 +189,7 @@ echo "config written to $CONFIG_PATH"
 # Render workerd config (control-plane logic service).
 WORKERD_CONFIG="$ROOT/workerd/config.capnp"
 DAGU_API_HOST="${DAGU_API#http://}"
-python3 - "$PKG_ROOT/workerd/config.capnp.tpl" "$WORKERD_CONFIG" "$ROOT" "$DAGU_API_HOST" "$WORKERD_PORT" <<'PYEOF'
+"$PYTHON3" - "$PKG_ROOT/workerd/config.capnp.tpl" "$WORKERD_CONFIG" "$ROOT" "$DAGU_API_HOST" "$WORKERD_PORT" <<'PYEOF'
 import sys
 
 src, dst, root, api_host, port = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
@@ -193,6 +217,7 @@ GATEWAY_UID=$GATEWAY_UID
 GATEWAY_GID=$GATEWAY_GID
 WORKERD_PORT=$WORKERD_PORT
 WORKERD_LOG=$ROOT/logs/workerd-access.log
+PYTHON3=$PYTHON3
 EOF
 
 echo "== [7/9] start dagu + init webhooks =="

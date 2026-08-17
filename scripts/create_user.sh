@@ -12,6 +12,20 @@ set -euo pipefail
 # from any deployment root without editing paths.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAGU_GATE_ROOT="${DAGU_GATE_ROOT:-$(dirname "$SCRIPT_DIR")}"
+
+# ---- python3: system interpreter first, bundled portable runtime fallback ----
+PYTHON3="${PYTHON3:-}"
+if [ -z "$PYTHON3" ] && command -v python3 >/dev/null 2>&1; then
+  PYTHON3="$(command -v python3)"
+fi
+if [ -z "$PYTHON3" ] && [ -x "$DAGU_GATE_ROOT/python/bin/python3" ]; then
+  PYTHON3="$DAGU_GATE_ROOT/python/bin/python3"
+fi
+if [ -z "$PYTHON3" ]; then
+  echo "ERROR: python3 not found (install python3 or keep dist/python-linux-x86_64.tar.gz in the package)" >&2
+  exit 1
+fi
+
 USER_DATA_ROOT="${USER_DATA_ROOT:-$DAGU_GATE_ROOT/users}"
 TEMPLATES_YAML="${TEMPLATES_YAML:-$DAGU_GATE_ROOT/templates.yaml}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$DAGU_GATE_ROOT/archive}"
@@ -27,8 +41,8 @@ if [ -z "$PAYLOAD" ]; then
   exit 1
 fi
 
-# ---- parse payload (JSON via python3, always present on Ubuntu) ----
-eval "$(python3 - "$PAYLOAD" <<'PYEOF'
+# ---- parse payload (JSON via python3: system or bundled portable runtime) ----
+eval "$("$PYTHON3" - "$PAYLOAD" <<'PYEOF'
 import json
 import sys
 
@@ -184,7 +198,7 @@ PROJECT_DIR="$TMP_DIR/workspace/$PROJECT_PATH"
 mkdir -p "$PROJECT_DIR/scripts"
 
 # inject server.json (gateway URLs for the OpenCode app)
-python3 - "$PROJECT_DIR/config/server.json" "$GATEWAY_PUBLIC_BASE_URL" <<'PYEOF'
+"$PYTHON3" - "$PROJECT_DIR/config/server.json" "$GATEWAY_PUBLIC_BASE_URL" <<'PYEOF'
 import json
 import os
 import sys

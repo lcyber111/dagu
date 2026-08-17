@@ -18,7 +18,9 @@
 - **dagu-net 网络**在老系统清理时可能被一并删除，部署脚本会检查并报错；需要 `docker network create dagu-net`。
 - **新增/修改 DAG 文件后需要重启 dagu**（存在 `.dag.index` 缓存），不会即时发现。
 - opencode server 未设置 `OPENCODE_SERVER_PASSWORD` 时会提示 unsecured，后续可在模板配置中补充。
-- 创建脚本依赖 python3 解析 JSON payload（Ubuntu 自带）；只作为部署脚本依赖，dagu 本体不依赖。
+- 创建/删除/启动/回收脚本依赖 python3 解析 JSON payload；install.sh 渲染配置也依赖 python3。
+  优先用系统 python3；系统没有时自动回退到交付包 `dist/python-linux-x86_64.tar.gz`
+  （便携 Python 3.12.14，解压到 `$DAGU_ROOT/python`）。dagu 本体不依赖 python3。
 
 ## ticket 05 网关实测补充
 

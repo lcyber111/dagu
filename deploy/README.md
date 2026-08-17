@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | dagu 二进制 | `dist/dagu-linux-amd64` | Linux amd64，交叉编译自 dagu-main |
 | workerd 二进制 | `dist/workerd-linux-amd64` | 控制面逻辑服务运行时（Cloudflare 开源 JS 运行时） |
+| 便携 Python | `dist/python-linux-x86_64.tar.gz` | Python 3.12.14（python-build-standalone），系统无 python3 时自动解压回退使用 |
 | 工作流定义 | `dags/user_create.yaml`、`dags/user_delete.yaml`、`dags/user_start.yaml`、`dags/reap_idle.yaml` | 创建/删除/恢复用户环境 + 空闲回收 |
 | 模板清单 | `templates.yaml` | `template_id` → 镜像/workspace/opencode 配置/默认资源 |
 | 模板数据 | `deploy/templates/tpl-dev-v2.tar.gz` | workspace + opencode.json |
@@ -27,7 +28,9 @@
    ```bash
    bash scripts/install.sh
    ```
-   安装脚本会：建目录 → 建 `dagu-net` 网络 → 加载镜像 → 拷贝运行文件 → 写 dagu 与 workerd 配置 → 启动 dagu（start-all）→ 初始化 webhook token（存 `.webhook-tokens/`）→ 启动 workerd 并健康检查 → 校验并启动 Caddy 网关。
+   安装脚本会：建目录 → 建 `dagu-net` 网络 → 加载镜像 → 拷贝运行文件（含便携 Python）→ 写 dagu 与 workerd 配置 → 启动 dagu（start-all）→ 初始化 webhook token（存 `.webhook-tokens/`）→ 启动 workerd 并健康检查 → 校验并启动 Caddy 网关。
+   主机**没有 python3 也可以安装**：install.sh 与 4 个工作流脚本会优先用系统 python3，
+   缺失时自动回退到包内便携 Python（解压到 `$DAGU_ROOT/python`，仅使用标准库，无需联网安装）。
 3. 查看 webhook token 并配置到门户侧：
    ```bash
    cat /home/li/dagu-run/.webhook-tokens/user_create.token

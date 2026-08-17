@@ -11,6 +11,20 @@ set -euo pipefail
 # ---- configuration (override via environment) ----
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAGU_GATE_ROOT="${DAGU_GATE_ROOT:-$(dirname "$SCRIPT_DIR")}"
+
+# ---- python3: system interpreter first, bundled portable runtime fallback ----
+PYTHON3="${PYTHON3:-}"
+if [ -z "$PYTHON3" ] && command -v python3 >/dev/null 2>&1; then
+  PYTHON3="$(command -v python3)"
+fi
+if [ -z "$PYTHON3" ] && [ -x "$DAGU_GATE_ROOT/python/bin/python3" ]; then
+  PYTHON3="$DAGU_GATE_ROOT/python/bin/python3"
+fi
+if [ -z "$PYTHON3" ]; then
+  echo "ERROR: python3 not found (install python3 or keep dist/python-linux-x86_64.tar.gz in the package)" >&2
+  exit 1
+fi
+
 DOCKER_NETWORK="${DOCKER_NETWORK:-dagu-net}"
 OPENCODE_PORT="${OPENCODE_PORT:-4096}"
 READINESS_TIMEOUT="${READINESS_TIMEOUT:-60}"
@@ -22,8 +36,8 @@ if [ -z "$PAYLOAD" ]; then
   exit 1
 fi
 
-# ---- parse payload (JSON via python3, always present on Ubuntu) ----
-eval "$(python3 - "$PAYLOAD" <<'PYEOF'
+# ---- parse payload (JSON via python3: system or bundled portable runtime) ----
+eval "$("$PYTHON3" - "$PAYLOAD" <<'PYEOF'
 import json
 import sys
 
