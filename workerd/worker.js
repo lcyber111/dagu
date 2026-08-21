@@ -88,8 +88,17 @@ export default {
   },
 };
 
-// 转发到 dagu：restart 需要把路径改成 webhook 并注入 token
+// 转发到 dagu：restart 需要把路径改成 webhook 并注入 token。
+// 转发前先校验 JSON：当前 dagu 构建对空/非法 JSON 会 panic（返回 500），
+// 这里在 workerd 层直接返回 400，避免坏请求到达 dagu。
 async function forwardToDagu(env, dagName, request) {
+  const rawBody = await request.text();
+  try {
+    JSON.parse(rawBody);
+  } catch (_) {
+    console.log(`workerd: 400 webhook ${dagName} invalid JSON body`);
+    return json({ code: "bad_request", message: "invalid JSON body" }, 400);
+  }
   const token = (await readToken(env, dagName)).trim();
   const upstream = new Request(`http://dagu/api/v1/webhooks/${dagName}`, {
     method: request.method,
@@ -97,7 +106,7 @@ async function forwardToDagu(env, dagName, request) {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: await request.text(),
+    body: rawBody,
   });
   return env.dagu.fetch(upstream);
 }

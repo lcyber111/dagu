@@ -2,9 +2,9 @@
 
 ## Git workflow (user convention)
 
-- 本地提交（commit）照常进行，但**不要频繁推送（push）到 GitHub**。
-- 改动攒一批后，主动询问用户；用户明确同意后，才执行 `git push`。
-- 未推送的提交继续留在本地分支，不重复推送或擅自推送。
+- 平时只修改文件，**不 `git add`、不 `git commit`**（改动频繁，避免频繁暂存）。
+- 一天工作结束时，统一 `git add` + `git commit` + `git push`（push 按用户指示执行）。
+- 未推送的内容继续留在本地，不擅自推送。
 
 ## Reference docs
 

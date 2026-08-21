@@ -110,15 +110,31 @@ ADMIN_TOKEN=$(curl -s -X POST http://172.17.0.1:18080/api/v1/auth/login \
 
 ### 2) 注册新用户（触发 user_create 工作流）
 
+
+
+
+
+192.168.0.3
+
+106.63.8.234
+
+http://106.63.8.234:9088/u/usr_test03
+
+http://106.63.8.234:9088/u/usr_test01
+
+
+
+
+
 ```bash
-CREATE_TOKEN=$(cat /home/li/dagu-run/.webhook-tokens/user_create.token)
+CREATE_TOKEN=$(cat /data1/lxz/dagu-run/.webhook-tokens/user_create.token)
 
 curl -s -w '\nHTTP:%{http_code}\n' -X POST \
-  http://192.168.252.131:9088/api/v1/webhooks/user_create \
+  http://192.168.0.3:9088/api/v1/webhooks/user_create \
   -H "Authorization: Bearer $CREATE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
-    "uid": "usr_test01",
+    "uid": "usr_test03",
     "username": "张三",
     "resources": {
       "cpu_limit": "2",
@@ -156,7 +172,7 @@ done
 
 ### 3) 访问已创建的用户容器（OpenCode 工作区）
 
-浏览器方式（最直观）：打开 `http://192.168.252.131:9088/u/usr_test01`，网关写入 `ws_user` Cookie 并跳到工作区页面。
+浏览器方式（最直观）：打开 `http://106.63.8.234:9088/u/usr_test03`，网关写入 `ws_user` Cookie 并跳到工作区页面。
 
 curl 方式：
 

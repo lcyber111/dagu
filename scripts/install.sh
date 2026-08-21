@@ -150,7 +150,7 @@ else
   echo "       dist/python-linux-x86_64.tar.gz in the delivery package" >&2
   exit 1
 fi
-echo "install: python3=$PYTHON3"
+echo  "install: python3=$PYTHON3"
 
 # Render DAG files from templates: an absolute script path is required because
 # dagu resolves step working directories against the per-run work directory in

@@ -26,6 +26,9 @@
   `GATEWAY_PUBLIC_BASE_URL` 等配置不会自动传给脚本；create_user.sh 曾因此把网关地址
   注入成默认值 `127.0.0.1:9088`。现在 4 个脚本会在变量为空时从 `$DAGU_GATE_ROOT/.deploy-env`
   （install.sh 写入的生效配置）读取，保证定时/手动运行与安装配置一致。
+- **dagu webhook 对空/非法 JSON 会 panic（500）**：当前 dagu 构建（version 0.0.0）在
+  TriggerWebhook 的 JSON 解码失败分支存在 nil 指针 panic。workerd 在 `forwardToDagu`
+  转发前先 `JSON.parse` 校验，非法/空 body 直接返回 400，避免坏请求到达 dagu。
 
 ## ticket 05 网关实测补充
 
