@@ -16,8 +16,10 @@
 /users/
 /data/
 /archive/
-/templates/
 /dags/
+
+# Source templates (templates/portal is deployed by install.sh; app-scaffold
+# is packaged inside deploy/templates/tpl-dev-v2.tar.gz) must stay versioned.
 
 # OS / editor / Python
 .DS_Store

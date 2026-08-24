@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>态势大屏</title>
+<link rel="stylesheet" href="lib/dashboard/dashboard.css">
+<link rel="stylesheet" href="lib/fontawesome/css/all.min.css">
+<style>
+body{background:#0f1115;color:#e6e6e6;padding:24px;font-family:sans-serif}
+.kpis{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+.kpi{flex:1;min-width:160px;background:#161b26;border:1px solid #2a2f3a;border-radius:8px;padding:14px}
+.kpi b{display:block;font-size:26px;color:#00ff88}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px}
+.chart{background:#161b26;border:1px solid #2a2f3a;border-radius:8px;padding:12px;height:320px}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid #2a2f3a;padding:6px 10px;text-align:left}
+</style>
+</head>
+<body>
+<h1><i class="fas fa-ship"></i> 态势大屏 <span id="ver"></span></h1>
+
+<div class="kpis" id="kpis"></div>
+<div class="charts">
+  <div class="chart" id="chart-bar"></div>
+  <div class="chart" id="chart-pie"></div>
+</div>
+<table id="t"><thead><tr><th>id</th><th>value</th><th>时间</th></tr></thead><tbody></tbody></table>
+
+<script src="lib/echarts/echarts.min.js"></script>
+<script>
+const api = "/api/data";
+const TOKEN = window.APP_TOKEN || "";
+async function apiFetch(path, opts) {
+  const h = Object.assign({}, opts && opts.headers);
+  if (TOKEN) h["X-App-Token"] = TOKEN;
+  return fetch(path, Object.assign({}, opts, { headers: h }));
+}
+const bar = echarts.init(document.getElementById("chart-bar"));
+const pie = echarts.init(document.getElementById("chart-pie"));
+
+async function refresh() {
+  const d = await apiFetch(api).then(r => r.json());
+  document.getElementById("ver").textContent = "(" + d.version + ")";
+  const items = d.items || [];
+
+  document.getElementById("kpis").innerHTML = [
+    { label: "记录总数", value: items.length },
+    { label: "数据版本", value: d.version },
+  ].map(k => `<div class="kpi"><span>${k.label}</span><b>${k.value}</b></div>`).join("");
+
+  const agg = {};
+  for (const it of items) agg[it.value] = (agg[it.value] || 0) + 1;
+  const cats = Object.keys(agg);
+  bar.setOption({
+    backgroundColor: "transparent",
+    title: { text: "按 value 统计", textStyle: { color: "#e6e6e6" } },
+    tooltip: {},
+    xAxis: { type: "category", data: cats, axisLabel: { color: "#9aa3b2" } },
+    yAxis: { type: "value", axisLabel: { color: "#9aa3b2" } },
+    series: [{ type: "bar", data: cats.map(c => agg[c]), itemStyle: { color: "#00ff88" } }],
+  });
+  pie.setOption({
+    backgroundColor: "transparent",
+    title: { text: "占比", textStyle: { color: "#e6e6e6" }, left: "center" },
+    tooltip: {},
+    series: [{
+      type: "pie", radius: ["35%", "65%"],
+      data: cats.map(c => ({ name: c, value: agg[c] })),
+      label: { color: "#e6e6e6" },
+    }],
+  });
+
+  const tb = document.querySelector("#t tbody");
+  tb.innerHTML = "";
+  for (const it of items) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${it.id}</td><td>${it.value}</td><td>${new Date(it.ts).toLocaleString()}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+refresh();
+setInterval(refresh, 10000); // 轮询兜底
+
+// M2 实时推送：WebSocket（DO Hub），收到消息立即刷新
+try {
+  const ws = new WebSocket(
+    (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/ws" + (TOKEN ? "?token=" + TOKEN : "")
+  );
+  ws.onmessage = () => refresh();
+  ws.onclose = () => setTimeout(() => location.reload(), 3000);
+} catch (_) {}
+
+window.addEventListener("resize", () => { bar.resize(); pie.resize(); });
+</script>
+</body>
+</html>

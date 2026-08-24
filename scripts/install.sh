@@ -75,6 +75,11 @@ echo "install: gateway=$GATEWAY_PUBLIC_BASE_URL network=$DOCKER_NETWORK"
 
 echo "== [1/9] layout =="
 mkdir -p "$ROOT"/{dags,data,users,archive,scripts,gateway,templates,.webhook-tokens,logs,workerd}
+# 平台级 secret：用于派生 per-app token（M3）
+if [ ! -f "$ROOT/.apps-secret" ]; then
+  head -c 32 /dev/urandom | base64 > "$ROOT/.apps-secret"
+  echo "generated .apps-secret"
+fi
 
 echo "== [2/9] stop old dagu/workerd =="
 # Stop dagu/workerd BEFORE overwriting their binaries: Linux refuses to
@@ -137,6 +142,18 @@ mkdir -p "$ROOT/templates"
 if [ ! -d "$ROOT/templates/tpl-dev-v2/workspace" ]; then
   tar -xzf "$ROOT/templates/tpl-dev-v2.tar.gz" -C "$ROOT/templates/"
 fi
+# App Worker 共享前端资产（lib/dashboard、echarts 等），供所有 App Worker 经 disk 绑定读取
+if [ -d "$ROOT/templates/tpl-dev-v2/workspace/version0802/agents_gen/lib" ]; then
+  mkdir -p "$ROOT/app-libs"
+  cp -a "$ROOT/templates/tpl-dev-v2/workspace/version0802/agents_gen/lib/." "$ROOT/app-libs/"
+  echo "installed app-libs (shared dashboard assets)"
+fi
+# 生成物门户静态页（由网关 workerd 经 disk 绑定托管）
+if [ -d "$PKG_ROOT/templates/portal" ]; then
+  mkdir -p "$ROOT/portal"
+  cp -a "$PKG_ROOT/templates/portal/." "$ROOT/portal/"
+  echo "installed portal (artifact workspace UI)"
+fi
 
 echo "== [6/9] render dagu + workerd config =="
 # Locate python3: system interpreter first, bundled portable runtime second.
@@ -155,11 +172,13 @@ echo  "install: python3=$PYTHON3"
 # Render DAG files from templates: an absolute script path is required because
 # dagu resolves step working directories against the per-run work directory in
 # server mode, not against the DAG file location.
-"$PYTHON3" - "$PKG_ROOT/deploy/dags" "$ROOT/dags" "$ROOT" "$REAP_CRON" <<'PYEOF'
+"$PYTHON3" - "$PKG_ROOT/deploy/dags" "$ROOT/dags" "$ROOT" "$REAP_CRON" "${SYNC_CRON:-*/5 * * * *}" "${MONITOR_CRON:-*/10 * * * *}" "${GUARD_CRON:-*/1 * * * *}" "${AUDIT_CRON:-*/5 * * * *}" <<'PYEOF'
 import os
 import sys
 
-src_dir, dst_dir, root, reap_cron = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+src_dir, dst_dir, root, reap_cron, sync_cron, monitor_cron, guard_cron, audit_cron = (
+    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7], sys.argv[8]
+)
 for name in sorted(os.listdir(src_dir)):
     if not name.endswith(".tpl"):
         continue
@@ -167,6 +186,10 @@ for name in sorted(os.listdir(src_dir)):
         data = fh.read()
     data = data.replace("{{DAGU_ROOT}}", root)
     data = data.replace("{{REAP_CRON}}", reap_cron)
+    data = data.replace("{{SYNC_CRON}}", sync_cron)
+    data = data.replace("{{MONITOR_CRON}}", monitor_cron)
+    data = data.replace("{{GUARD_CRON}}", guard_cron)
+    data = data.replace("{{AUDIT_CRON}}", audit_cron)
     dst = os.path.join(dst_dir, name[:-4])
     with open(dst, "w", encoding="utf-8") as fh:
         fh.write(data)
@@ -253,7 +276,7 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
-for dag in user_create user_delete user_start; do
+for dag in user_create user_delete user_start app_sync app_delete app_select app_apply; do
   RESP=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" "$DAGU_API/api/v1/dags/$dag/webhook")
   WT=$(printf '%s' "$RESP" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   if [ -z "$WT" ]; then
@@ -312,7 +335,7 @@ docker run --rm \
 docker compose up -d --force-recreate
 
 echo "install complete. webhook tokens:"
-for dag in user_create user_delete user_start; do
+for dag in user_create user_delete user_start app_sync app_delete app_select app_apply; do
   echo "  $dag: $(cat "$ROOT/.webhook-tokens/$dag.token")"
 done
 echo "workerd: pid $(cat "$ROOT/workerd/workerd.pid") on :$WORKERD_PORT, log $ROOT/logs/workerd-access.log"

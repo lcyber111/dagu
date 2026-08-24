@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智能体工作台</title>
+<link rel="stylesheet" href="/portal/app.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="chat" id="chatPane">
+    <div class="chat-head">
+      <b>OpenCode 对话</b>
+      <button id="collapseBtn" title="折叠对话">‹</button>
+    </div>
+    <div class="chat-body"><iframe id="chatFrame" src="/" title="opencode"></iframe></div>
+  </aside>
+  <div class="divider" id="divider" title="拖拽调整左右比例"></div>
+  <main class="right">
+    <section class="gallery">
+      <div class="gallery-head">
+        <h2>智能体生成物（态势大屏 · 后端 + 前端 + SQLite）</h2>
+        <button id="refreshList" title="刷新列表">刷新</button>
+      </div>
+      <div class="cards" id="cards"></div>
+      <div class="empty" id="empty" style="display:none">
+        <p><b>还没有生成物。</b></p>
+        <p>在左侧对话里让智能体生成"态势大屏"，产出后会自动出现在这里，点击即可切换展示。</p>
+      </div>
+    </section>
+    <section class="preview">
+      <div class="preview-bar" id="previewBar" style="display:none">
+        <span id="pname"></span>
+        <span class="badge" id="pstatus"></span>
+        <span id="pver"></span>
+        <a id="popen" href="#" target="_blank" rel="noopener">新标签打开</a>
+        <button id="pRefresh" title="重新加载大屏">刷新</button>
+        <span class="close" id="pClose">关闭</span>
+      </div>
+      <iframe id="frame" title="生成物展示"></iframe>
+    </section>
+</main>
+</div>
+<div id="dragShield" style="display:none"></div>
+<script src="/portal/app.js"></script>
+</body>
+</html>

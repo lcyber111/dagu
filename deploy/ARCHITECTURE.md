@@ -439,3 +439,49 @@ dagu-run/
 ├── logs/workerd-access.log   # workerd 日志（仅排障）
 └── .webhook-tokens/*.token   # webhook 鉴权 token
 ```
+
+## 九、App Worker 运行时（C+，2026-08-24）
+
+### 定位
+
+大屏从"生成期静态快照"演进为"运行时应用"：**每个大屏 = 宿主机 workerd 内的一个 App Worker（独立 service/isolate）**，agent 编写完整 ES 模块（worker.js），前端经 disk 绑定托管、数据存 DO SQLite、运行时经 /api/data 读取、WebSocket 实时推送。控制面 workerd 兼任 router（按注册表分发）。详见 ADR-0003。
+
+### 架构图（叠加在既有链路上）
+
+``
+浏览器（/apps 列表页 · 新标签页打开大屏）
+   │  /apps、/api/v1/*、/u/*、/app-proxy/2xxxx
+Caddy :9088 ──────────────────────────────
+   ├─ /api/v1/*、/u/*、/apps/* → workerd :9090（单进程）
+   │     ├─ gatewayWorker：控制面 + router（每请求读 apps.json）
+   │     ├─ app-<uid>-<appId>-<version> × N（独立 service/isolate）
+   │     │     ├─ worker.js（agent 编写；页面 + /api/data CRUD + SQLite + /api/ws）
+   │     │     ├─ www/（disk）· lib（共享 app-libs）· data-<ver>（SQLite, writable）
+   │     │     └─ DO：AppStore（enableSql）+ Hub（WebSocket Hibernation）
+   │     └─ 守护/监控/审计：workerd_guard · app_monitor · app_audit
+   └─ 容器 dagu-u-{uid}：opencode(4096)（agent 编辑端）+ 存量 serve_html（过渡）
+
+dagu 定时 DAG：app_sync_data（查上游写回）· app_monitor · workerd_guard · app_audit
+``
+
+### 关键机制
+
+- **注册表驱动路由**：gateway 每请求读 users/<uid>/workspace/.apps/apps.json；发布/切版本/回滚 = 改 manifest，零 config 零重启（新 app/新版本首次出现才经 app_sync 重建 config + 热加载）；
+- **每 app/版本独立 isolate**：数据/代码/故障域隔离；SQLite 按版本独立目录；
+- **实时数据**：pp_sync_data 定时查 Doris/MySQL（容器内执行，宿主零驱动）→ 网关 refresh 路由 → App SQLite → WebSocket（DO Hibernation）推送前端无感刷新；
+- **安全**：Cookie（uid 级）+ 可选 per-app token（X-App-Token / WS ?token=，由 .apps-secret 确定性派生）；
+- **生命周期**：pp_sync（发布）、pp_delete（删除+归档+重建）、版本文件不覆盖；
+- **可靠性与可观测**：config 先 workerd compile 校验再覆盖；workerd_guard 自动拉起；pp_monitor 巡检配额/同步；pp_audit 汇总操作审计。
+
+### 数据流
+
+- 生成期：需求理解 → db_query 查库 → 种子数据 → 写 .apps/ → pp_sync 发布；
+- 运行期：前端 /api/data 轮询 + /api/ws 推送；pp_sync_data 每 5 分钟同步上游；
+- 版本：direct 测试 → manifest 切默认版本（零重启，在途 v1 自然完成）。
+
+### 边界与约束（实现要点）
+
+- capnp embed 相对配置文件目录、不支持绝对路径；disk 路径相对 workerd CWD；
+- DO 数据盘 writable=true；.apps 访问需 allowDotfiles=true；DO namespace 需显式绑定；
+- DO 存储锁：同一数据目录单实例；workerd 重启须等旧进程退出；
+- --watch 只监听 config：改 worker.js 必须发布（app_sync）。

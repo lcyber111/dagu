@@ -25,6 +25,14 @@
 	# =========================================================
 	# 租户入口 /u/{uid}：转发给 workerd 写 Cookie 并 302 到 /
 	# =========================================================
+	handle /apps {
+		reverse_proxy 172.17.0.1:9090
+	}
+
+	handle /apps/* {
+		reverse_proxy 172.17.0.1:9090
+	}
+
 	handle /u/* {
 		reverse_proxy 172.17.0.1:9090
 	}
@@ -32,6 +40,16 @@
 	# =========================================================
 	# 规则 2：网关直接响应无凭据探针
 	# =========================================================
+
+	handle /workspace {
+		reverse_proxy 172.17.0.1:9090
+	}
+	handle /workspace/* {
+		reverse_proxy 172.17.0.1:9090
+	}
+	handle /portal/* {
+		reverse_proxy 172.17.0.1:9090
+	}
 	handle /site.webmanifest {
 		header Content-Type "application/manifest+json"
 		respond `{"name":"OpenCode","short_name":"OpenCode","start_url":"/","display":"standalone","background_color":"#ffffff","theme_color":"#000000"}` 200
@@ -46,6 +64,23 @@
 	# =========================================================
 	@get_user header_regexp cookie_user Cookie (?:^|;\s*)ws_user=([a-zA-Z0-9_.-]+)
 	handle @get_user {
+
+		# 3a0. C+ PoC：/app-proxy/2xxxx -> 宿主机 workerd :19090（保留路径，由 gateway 按 manifest 分发）
+		@appproxy_poc path_regexp apphost ^/app-proxy/(2[0-9]{4})(/.*)$
+		handle @appproxy_poc {
+			reverse_proxy 172.17.0.1:9090 {
+				header_up X-Real-IP {http.request.remote.host}
+				header_up X-Forwarded-For {http.request.remote.host}
+				header_up X-Forwarded-Proto {http.request.scheme}
+				flush_interval -1
+			}
+		}
+
+		# 3a0r. C+ PoC 根路径：/app-proxy/2xxxx -> 宿主机 workerd :19090
+		@appproxy_poc_root path_regexp apphostroot ^/app-proxy/(2[0-9]{4})$
+		handle @appproxy_poc_root {
+			reverse_proxy 172.17.0.1:9090
+		}
 
 		# 3a. 子应用子路径: /app-proxy/<port>/... -> dagu-u-{UID}:<port>/...
 		@appproxy_sub path_regexp appsub ^/app-proxy/([0-9]+)(/.*)$
@@ -112,7 +147,7 @@
 	# 容器不可达（被空闲回收 / 未就绪）时显示启动页并触发恢复
 	# =========================================================
 	handle_errors {
-		@stopped expression `{err.status_code} == 502 && {http.request.cookie.ws_user} != "" && ({http.request.uri.path}.startsWith("/api/") == false)`
+		@stopped expression `{err.status_code} == 502 && {http.request.cookie.ws_user} != "" && ({http.request.uri.path}.startsWith("/api/") == false) && ({http.request.uri.path}.startsWith("/app-proxy/") == false)`
 		handle @stopped {
 			header Content-Type "text/html; charset=utf-8"
 			respond `<!DOCTYPE html>

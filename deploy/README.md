@@ -317,3 +317,65 @@ curl -s -b /tmp/occ-cookie -o /dev/null -w 'page HTTP:%{http_code}\n' --max-time
 - 新增 DAG 不生效：重启 dagu。
 - 创建报"docker network ... does not exist"：`docker network create dagu-net`。
 - 容器反复重启：检查镜像 ENTRYPOINT（`opencode`），`docker run` 不要传多余命令。
+
+## App Worker 运行时大屏（M0-M3 落地，2026-08-24）
+
+在既有"用户容器 + 静态大屏"之上新增运行时大屏体系：**每个大屏 = 宿主机 workerd 内的一个 App Worker（独立 service/isolate）**，数据运行时实时，前端/后端/存储由 agent 在容器里编写维护。详见 ADR-0003。
+
+### 目录与文件约定
+
+``
+users/<uid>/workspace/.apps/
+  apps.json                     # 注册表/事实源：appId → port/版本/默认版本/token/sync
+  <appId>/
+    v1.js / v2.js ...           # App Worker（agent 编写，版本文件不覆盖）
+    www/                        # 页面资产（disk 绑定，改文件即时生效）
+    data-<version>/             # DO SQLite（按版本独立目录）
+``
+
+端口段 20000-29999；宿主 pp-libs/ 为共享前端资产（echarts 等），页面经 /lib/... 引用。
+
+### Agent / 用户操作流程
+
+1. 写 app：在 .apps/<appId>/ 放 1.js（脚手架见 	emplates/app-scaffold/）与 www/；
+2. 登记：pps.json 加 app（port、defaultVersion、可选 	oken: true、sync: {db, sql}）；
+3. 发布（一条命令，无需 token）：
+   curl -X POST http://IP:9088/api/v1/apps/sync -H "Content-Type: application/json" -d '{"payload":{"uid":"<uid>"}}'
+4. 验证：http://IP:9088/app-proxy/<port>/api/health（带会话 Cookie；开启 token 需 X-App-Token）；
+5. 版本：direct 测试 /app-proxy/<port>/...?version=v2，通过后改 pps.json 的 defaultVersion（零重启）；
+6. 删除：/apps 页"删除"按钮（或 DELETE /api/v1/apps/<appId>）→ 摘除 + 归档 rchive/apps/ + 重建配置。
+
+### 运维
+
+- 手动重建配置：ash scripts/app_sync.sh（env：DAGU_ROOT/WORKERD_PORT/WORKERD_BIN/DAGU_API）；
+- 定时同步：dagu DAG pp_sync_data（默认每 5 分钟，按各 app 的 sync 配置查上游写入）；
+- 监控：pp_monitor（每 10 分钟，配额/同步陈旧告警到 dagu 运行日志）；
+- 守护：workerd_guard（每 1 分钟，进程/9090 未监听自动拉起）；
+- 审计：pp_audit（每 5 分钟，Caddy 日志增量提取发布/删除/刷新 → logs/app-audit.log）；
+- 配额：每 uid ≤ 20 app、单 app SQLite ≤ 100MB，超限发布失败；
+- 平台 secret：$DAGU_ROOT/.apps-secret（per-app token 派生用，勿泄露/删除）。
+
+### 配置项（env，均有默认）
+
+``
+SYNC_CRON="*/5 * * * *"     # 数据同步
+MONITOR_CRON="*/10 * * * *" # 监控巡检
+GUARD_CRON="*/1 * * * *"    # workerd 守护
+AUDIT_CRON="*/5 * * * *"    # 审计汇总
+``
+
+### 排障补充
+
+- workerd 重启前确认旧进程已退出（DO 存储锁，否则新实例启动阻塞）；
+- --watch 只监听 config 文件：改 worker.js 必须走 pp_sync 发布；
+- 开启 	oken: true 后，定时同步由 app_sync_data 自动派生并透传，无需手工带 token；
+- 大屏页面轮询兜底 10s，WebSocket（/api/ws）实时推送；跨请求广播依赖 DO Hibernation。
+### 生成物门户（/workspace）
+
+- 入口：http://IP:9088/workspace（带会话 Cookie）；左侧固定 OpenCode 对话（可折叠），右侧生成物列表 + 切换展示（同一时间显示一个）。
+- 数据源：GET /api/v1/apps（uid 鉴权；返回 title/description/createdAt/type/版本/状态[探活]，不含 token）。
+- 交互：点卡片切换展示（旧 iframe 销毁）；新标签打开、删除（归档）、刷新；列表 5s 轮询，空闲时自动选中最新生成物。
+- 静态资产：$DAGU_ROOT/portal/（index.html/app.js/app.css），由网关经 disk 绑定托管，改文件即时生效。
+- 生成物元数据（agent 生成时写入 pps.json）：	itle、description、createdAt、	ype（默认 dashboard）；门户自动补版本/端口/状态/最近同步时间。- 交互增强：左右面板**分隔条可拖拽**调比例（15%–85%，Pointer 捕获 + 全屏遮罩防 iframe 抢事件，记忆到 localStorage）；折叠对话为 CSS 隐藏保留会话。
+- **选中标记**：点选卡片后网关经 dagu `app_select` DAG 写 `users/<uid>/workspace/.apps/.selected`，agent 据此知道用户当前看哪个生成物（SOP：改当前大屏前先读它）。
+- **发布自动刷新**：`app_sync` 每次发布写 manifest `_meta.lastPublish`，门户检测变化自动重载预览。

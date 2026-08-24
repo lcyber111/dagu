@@ -218,13 +218,13 @@ cp -a "$TPL_OPENCODE" "$TMP_DIR/config/opencode.json"
 PROJECT_DIR="$TMP_DIR/workspace/$PROJECT_PATH"
 mkdir -p "$PROJECT_DIR/scripts"
 
-# inject server.json (gateway URLs for the OpenCode app)
-"$PYTHON3" - "$PROJECT_DIR/config/server.json" "$GATEWAY_PUBLIC_BASE_URL" <<'PYEOF'
+# inject server.json (gateway URLs + uid for the OpenCode app)
+"$PYTHON3" - "$PROJECT_DIR/config/server.json" "$GATEWAY_PUBLIC_BASE_URL" "$UID_VAL" <<'PYEOF'
 import json
 import os
 import sys
 
-path, base_url = sys.argv[1], sys.argv[2]
+path, base_url, uid = sys.argv[1], sys.argv[2], sys.argv[3]
 config = {}
 if os.path.isfile(path):
     with open(path, encoding="utf-8") as fh:
@@ -233,6 +233,7 @@ config.update(
     {
         "baseUrl": base_url,
         "appProxyBaseUrl": base_url.rstrip("/") + "/app-proxy",
+        "uid": uid,
         "description": "Dashboard access through the central OCC gateway",
     }
 )
@@ -257,6 +258,7 @@ docker run -d \
   -w "/workspace/$PROJECT_PATH" \
   -e "OPENCODE_PORT=$OPENCODE_PORT" \
   -e "OPENCODE_EXECUTABLE=$OPENCODE_EXECUTABLE" \
+  -e "WS_USER=$UID_VAL" \
   "$IMAGE" >/dev/null
 
 wait_ready
