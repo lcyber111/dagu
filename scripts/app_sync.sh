@@ -5,6 +5,7 @@
 # 环境变量（可选）：
 #   DAGU_ROOT     部署根（默认脚本上级目录）
 #   WORKERD_PORT  workerd 监听端口（默认 9090）
+#   WORKERD_BIND  workerd 监听地址（默认 172.17.0.1，仅 docker 网桥可达，Caddy 容器经此访问）
 #   WORKERD_BIN   workerd 二进制（默认 $DAGU_ROOT/workerd/workerd）
 #   DAGU_API      dagu 管理服务地址（默认 172.17.0.1:18080）
 #
@@ -21,6 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAGU_ROOT="${DAGU_ROOT:-$(dirname "$SCRIPT_DIR")}"
 WORKERD_PORT="${WORKERD_PORT:-9090}"
+WORKERD_BIND="${WORKERD_BIND:-172.17.0.1}"
 DAGU_API="${DAGU_API:-172.17.0.1:18080}"
 WORKERD_BIN="${WORKERD_BIN:-$DAGU_ROOT/workerd/workerd}"
 if [ ! -x "$WORKERD_BIN" ]; then
@@ -31,7 +33,7 @@ if [ -z "$WORKERD_BIN" ] || [ ! -x "$WORKERD_BIN" ]; then
   exit 1
 fi
 
-echo "app_sync: DAGU_ROOT=$DAGU_ROOT WORKERD_PORT=$WORKERD_PORT"
+echo "app_sync: DAGU_ROOT=$DAGU_ROOT WORKERD_PORT=$WORKERD_PORT WORKERD_BIND=$WORKERD_BIND"
 
 # 可选：仅同步指定用户（dagu webhook 透传 WEBHOOK_PAYLOAD={"payload":{"uid":...}}）
 SCOPE_UID=""
@@ -41,20 +43,13 @@ p=json.loads(sys.argv[1]); p=p.get("payload",p); print(p.get("uid",""))' "$WEBHO
   echo "app_sync: scope uid=$SCOPE_UID"
 fi
 
-python3 - "$DAGU_ROOT" "$WORKERD_PORT" "$DAGU_API" "$SCOPE_UID" > "$DAGU_ROOT/workerd/config.capnp.tmp" <<'PY'
+python3 - "$DAGU_ROOT" "$WORKERD_PORT" "$WORKERD_BIND" "$DAGU_API" "$SCOPE_UID" > "$DAGU_ROOT/workerd/config.capnp.tmp" <<'PY'
 import json
-import hashlib
 import os
 import sys
 import time
 
-root, port, dagu_api, scope_uid = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-
-# 平台级 secret：用于确定性派生 per-app token（安装时生成 $DAGU_ROOT/.apps-secret）
-SECRET = ""
-_secret_file = os.path.join(root, ".apps-secret")
-if os.path.isfile(_secret_file):
-    SECRET = open(_secret_file, encoding="utf-8").read().strip()
+root, port, bind, dagu_api, scope_uid = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 
 # ---- 配额（M1）----
 MAX_APPS_PER_USER = 20
@@ -71,8 +66,6 @@ if os.path.isdir(users_root):
                     data = json.load(open(p, encoding="utf-8"))
                 except Exception as e:
                     print(f"# WARN: bad registry {p}: {e}", file=sys.stderr)
-                    continue
-                if scope_uid and entry != scope_uid:
                     continue
                 # 配额校验：app 数量
                 apps = data.get("apps") or []
@@ -103,9 +96,35 @@ if os.path.isdir(users_root):
                                 sys.exit(1)
                 manifests.append((entry, p, data))
 
+# ---- 端口唯一性 + 区间校验（跨所有用户） ----
+seen_ports = {}
+for _uid, _reg, _manifest in manifests:
+    for _app in (_manifest.get("apps") or []):
+        _p = _app.get("port")
+        if not _p:
+            continue
+        if not (isinstance(_p, int) and 20000 <= _p <= 29999):
+            print(
+                "ERROR: uid %s app %s port %r 不在 20000-29999 区间"
+                % (_uid, _app.get("id"), _p),
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if _p in seen_ports:
+            print(
+                "ERROR: 端口冲突 %d：%s/%s 与 %s/%s"
+                % (_p, _uid, _app.get("id"), seen_ports[_p][0], seen_ports[_p][1]),
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        seen_ports[_p] = (_uid, _app.get("id"))
+
 # 发布标记：每次 app_sync 生成配置后更新 _meta.lastPublish（门户据此自动刷新预览）
 _now = time.time()
 for _uid, _reg, _manifest in manifests:
+    # config 是全量（所有用户）生成的；scope 只用于 lastPublish 标记，避免每次发布刷新所有用户预览
+    if scope_uid and _uid != scope_uid:
+        continue
     _meta = _manifest.setdefault("_meta", {})
     _meta["lastPublish"] = _now
     json.dump(_manifest, open(_reg, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
@@ -180,20 +199,6 @@ for uid, reg_path, manifest in manifests:
                 sys.exit(1)
             app_bindings = []
 
-            # per-app token（M3）：manifest 版本项 token=true 自动派生 / token="xxx" 显式指定
-            token = ""
-            tok = v.get("token")
-            if tok is True:
-                if SECRET:
-                    token = hashlib.sha256((SECRET + "|" + unique_key).encode()).hexdigest()[:32]
-            elif isinstance(tok, str) and tok:
-                token = tok
-            if token:
-                app_bindings.append(
-                    '    (name = "config", json = %s),'
-                    % capnp_str(json.dumps({"token": token}, separators=(",", ":")))
-                )
-
             services.append('    (name = %s, worker = .%s),' % (capnp_str(svc), cname))
             services.append(
                 '    (name = %s, disk = (path = %s, allowDotfiles = true)),'
@@ -245,7 +250,7 @@ const config :Workerd.Config = (
 %s
   ],
   sockets = [
-    ( name = "http", address = "*:%s", http = (), service = "main" ),
+    ( name = "http", address = "%s:%s", http = (), service = "main" ),
   ],
 );
 
@@ -266,6 +271,7 @@ const gatewayWorker :Workerd.Worker = (
 %s
 """ % (
     "\n".join(services),
+    bind,
     port,
     capnp_str(dagu_api),
     capnp_str(rel_embed(os.path.join(root, "workerd", "worker.js"))),
@@ -279,9 +285,14 @@ PY
 echo "== app_sync: 校验配置 =="
 # embed/disk 相对路径按 workerd 进程 CWD 解析，因此编译校验与 serve 都必须在 DAGU_ROOT 下运行
 if (cd "$DAGU_ROOT" && "$WORKERD_BIN" compile workerd/config.capnp.tmp >/dev/null 2>workerd/compile.err); then
-  mv "$DAGU_ROOT/workerd/config.capnp.tmp" "$DAGU_ROOT/workerd/config.capnp"
-  rm -f "$DAGU_ROOT/workerd/compile.err"
-  echo "app_sync: config.capnp 已更新（workerd 将自动/重启后加载）"
+  if [ -f "$DAGU_ROOT/workerd/config.capnp" ] && cmp -s "$DAGU_ROOT/workerd/config.capnp.tmp" "$DAGU_ROOT/workerd/config.capnp"; then
+    rm -f "$DAGU_ROOT/workerd/config.capnp.tmp" "$DAGU_ROOT/workerd/compile.err"
+    echo "app_sync: config.capnp unchanged, skip reload"
+  else
+    mv "$DAGU_ROOT/workerd/config.capnp.tmp" "$DAGU_ROOT/workerd/config.capnp"
+    rm -f "$DAGU_ROOT/workerd/compile.err"
+    echo "app_sync: config.capnp updated (workerd reload)"
+  fi
 else
   echo "app_sync: 配置校验失败，保留旧 config" >&2
   cat "$DAGU_ROOT/workerd/compile.err" >&2

@@ -1,13 +1,17 @@
 // dagu-gate 控制面 + App Worker 路由（M1）
 //
-// 控制面：
-//   /u/{uid}              -> 校验 uid，写 ws_user Cookie，302 到 /
+// 门户面：
+//   /portal/u/{uid}       -> 校验 uid，写 ws_user Cookie，302 到 /portal
+//   /portal               -> 门户页；/portal/* -> 门户静态资产
+// 轻应用控制面：
+//   /app/v1/list|sync|select|delete|apply/spec
+// dagu 平台面：
 //   /api/v1/health        -> 健康检查 JSON
 //   /api/v1/webhooks/*    -> 校验 Bearer token，原样透传 dagu
 //   /api/v1/restart/{uid} -> 注入 user_start token 后转发 dagu
 //
 // 数据面（App Worker 路由）：
-//   /app-proxy/<port>[/...] -> 读 ws_user Cookie 得到 uid，读
+//   /app/<port>[/...] -> 读 ws_user Cookie 得到 uid，读
 //   users/<uid>/workspace/.apps/apps.json（注册表，每请求读，可加缓存），
 //   按端口找到 app 与版本（?version= 显式指定或 defaultVersion），
 //   通过 service binding 分发到对应 App Worker。
@@ -19,16 +23,11 @@
 //   env["app-<uid>-<appId>-<version>"] -> App Worker service
 
 const UID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-const ENTRY_RE = /^\/u\/([A-Za-z0-9_.-]+)(\/.*)?$/;
+const ENTRY_RE = /^\/portal\/u\/([A-Za-z0-9_.-]+)$/;   // 门户统一入口
 const RESTART_RE = /^\/api\/v1\/restart\/([A-Za-z0-9_.-]+)$/;
 const WEBHOOK_RE = /^\/api\/v1\/webhooks\/([A-Za-z0-9_-]+)$/;
-const APPPROXY_RE = /^\/app-proxy\/([0-9]+)(\/.*)?$/;
-const APPS_SYNC_RE = /^\/api\/v1\/apps\/sync$/;
-const APPS_REFRESH_RE = /^\/api\/v1\/apps\/([A-Za-z0-9_-]+)\/refresh$/;
-const APPS_DELETE_RE = /^\/api\/v1\/apps\/([A-Za-z0-9_-]+)$/;
-const APPS_SELECT_RE = /^\/api\/v1\/apps\/selected$/;
-const APPS_APPLY_WWW_RE = /^\/api\/v1\/apps\/apply-www$/;
-const APPS_APPLY_META_RE = /^\/api\/v1\/apps\/apply-meta$/;
+const APP_RE = /^\/app\/([0-9]+)(\/.*)?$/;              // 数据面 /app/<port>
+const APP_CTRL_PREFIX = "/app/v1/";                     // 控制面 /app/v1/<verb>
 
 const TOKEN_FILES = {
   user_create: "user_create.token",
@@ -45,25 +44,24 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // 0) App Worker 路由
-    const am = path.match(APPPROXY_RE);
-    if (am) return routeApp(request, env, url, am);
+    // 0) 数据面：/app/<port>/...（App Worker 路由；控制面 /app/v1/* 除外）
+    if (path.startsWith("/app/") && !path.startsWith(APP_CTRL_PREFIX)) {
+      const am = path.match(APP_RE);
+      if (am) return routeApp(request, env, url, am);
+    }
 
-    // 1) /u/{uid} 入口：写 Cookie -> 302 到 /
-    if (path.startsWith("/u/")) {
-      const m = path.match(ENTRY_RE);
-      if (!m || !UID_RE.test(m[1])) {
-        console.log(`workerd: 400 /u/ invalid path=${path}`);
+    // 1) 门户统一入口：/portal/u/{uid} -> 写 Cookie -> 302 /portal
+    const em = path.match(ENTRY_RE);
+    if (em) {
+      const uid = em[1];
+      if (!UID_RE.test(uid)) {
+        console.log(`workerd: 400 /portal/u/ invalid uid=${path}`);
         return json({ code: "bad_request", message: "invalid uid" }, 400);
       }
-      const uid = m[1];
-      console.log(`workerd: 302 /u/${uid}`);
+      console.log(`workerd: 302 /portal/u/${uid}`);
       return new Response(null, {
         status: 302,
-        headers: {
-          Location: "/",
-          "Set-Cookie": `ws_user=${uid}; Path=/; SameSite=Lax; HttpOnly`,
-        },
+        headers: { Location: "/portal", "Set-Cookie": `ws_user=${uid}; Path=/; SameSite=Lax; HttpOnly` },
       });
     }
 
@@ -73,15 +71,8 @@ export default {
       return json({ status: "healthy", timestamp: new Date().toISOString() });
     }
 
-    // 2.5) 大屏列表页（当前用户的 .apps 注册表）
-    if (path === "/apps" || path === "/apps/") {
-      return appsPage(request, env);
-    }
-
     // 2.6) 生成物门户页与静态资产
-    if (path === "/workspace" || path === "/workspace/") {
-      return portalPage(request, env);
-    }
+    if (path === "/portal" || path === "/portal/") return portalPage(request, env);
     if (path.startsWith("/portal/")) {
       return portalAsset(request, env);
     }
@@ -98,50 +89,45 @@ export default {
       return forwardToDagu(env, "user_start", request);
     }
 
-    // 3.5) 内部路由：agent 发布 App（注入 app_sync token，无需外部密钥）
-    if (path.startsWith("/api/v1/apps/sync")) {
-      const m = path.match(APPS_SYNC_RE);
-      if (!m) return json({ code: "bad_request", message: "invalid path" }, 400);
+    // 3.5) 轻应用控制面：/app/v1/<verb>（list/sync/select/delete/apply/spec）
+    if (path.startsWith(APP_CTRL_PREFIX)) {
+      const parts = path.slice(APP_CTRL_PREFIX.length).split("/");
+      const action = parts[0] || "";
+      const sub = parts[1] || "";
       const uid = readCookie(request.headers.get("Cookie") || "", "ws_user");
       if (!uid || !UID_RE.test(uid)) {
         return json({ code: "unauthorized", message: "missing ws_user cookie" }, 401);
       }
-      console.log(`workerd: apps/sync uid=${uid} -> dagu app_sync`);
-      const body = JSON.stringify({ payload: { uid } });
-      const injected = new Request("http://internal" + path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-      });
-      return forwardToDagu(env, "app_sync", injected);
-    }
-
-    // 3.55) 内部路由：修改现有大屏（平台强制目标 = .selected，agent 不能自选）
-    if (path === "/api/v1/apps/apply-www" && request.method === "POST") {
-      return appsApply(request, env, "www");
-    }
-    if (path === "/api/v1/apps/apply-meta" && request.method === "POST") {
-      return appsApply(request, env, "meta");
-    }
-
-    // 3.6) 内部路由：app_sync_data 定时同步写回（POST /api/v1/apps/<appId>/refresh）
-    if (path.startsWith("/api/v1/apps/")) {
-      if (path === "/api/v1/apps/selected" && request.method === "PUT") {
-        return appsSelect(request, env);
+      switch (action) {
+        case "list":
+          if (request.method === "GET") return appsList(request, env);
+          break;
+        case "sync":
+          if (request.method === "POST") {
+            console.log(`workerd: app/v1/sync uid=${uid} -> dagu app_sync`);
+            const body = JSON.stringify({ payload: { uid } });
+            const injected = new Request("http://internal/app/v1/sync", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body,
+            });
+            return forwardToDagu(env, "app_sync", injected);
+          }
+          break;
+        case "select":
+          if (request.method === "PUT") return appsSelect(request, env);
+          break;
+        case "delete":
+          if (request.method === "POST") return appsDelete(request, env);
+          break;
+        case "apply":
+          if (sub === "spec" && request.method === "POST") return appsApplySpec(request, env);
+          return json({ code: "not_found", message: "not found" }, 404);
+          break;
+        default:
+          return json({ code: "not_found", message: "not found" }, 404);
       }
-      if (request.method === "DELETE") {
-        const m = path.match(APPS_DELETE_RE);
-        if (!m) return json({ code: "bad_request", message: "invalid path" }, 400);
-        return appsDelete(request, env, m);
-      }
-      const m = path.match(APPS_REFRESH_RE);
-      if (!m) return json({ code: "bad_request", message: "invalid path" }, 400);
-      return appsRefresh(request, env, url, m);
-    }
-
-    // 3.7) 生成物清单（门户页数据源）
-    if (path === "/api/v1/apps" && request.method === "GET") {
-      return appsList(request, env);
+      return json({ code: "method_not_allowed", message: "method not allowed" }, 405);
     }
 
 
@@ -175,6 +161,10 @@ export default {
 async function routeApp(request, env, url, m) {
   const port = m[1];
   const rest = m[2] || "/";
+  // 规范化：/app/<port>（无尾斜杠）→ 302 /app/<port>/，保证页面内相对资源（lib/...）路径正确
+  if (rest === "/" && !url.pathname.endsWith("/")) {
+    return Response.redirect(new URL(url.pathname + "/" + url.search, url), 302);
+  }
   const uid = readCookie(request.headers.get("Cookie") || "", "ws_user");
   if (!uid || !UID_RE.test(uid)) {
     return json({ code: "unauthorized", message: "missing ws_user cookie" }, 401);
@@ -204,37 +194,6 @@ async function routeApp(request, env, url, m) {
   next.headers.set("X-App-Id", app.id);
   next.headers.set("X-App-Version", version);
   return target.fetch(next);
-}
-
-// 大屏列表页：列出当前 uid 的所有 app（含版本与链接）
-async function appsPage(request, env) {
-  const uid = readCookie(request.headers.get("Cookie") || "", "ws_user");
-  if (!uid || !UID_RE.test(uid)) {
-    return json({ code: "unauthorized", message: "missing ws_user cookie" }, 401);
-  }
-  const manifest = await loadManifest(env, uid);
-  const apps = manifest && manifest.apps ? manifest.apps : [];
-  const rows = apps
-    .map(a => {
-      const versions = Object.keys(a.versions || {});
-      const links = versions
-        .map(v => `<a href="/app-proxy/${a.port}/?version=${v}">${v}</a>`)
-        .join(" · ");
-      return `<li><b>${escapeHtml(a.id)}</b>（端口 ${a.port}，默认 ${escapeHtml(a.defaultVersion || "")}）— ${links}
-        <button onclick="del('${escapeHtml(a.id)}')">删除</button></li>`;
-    })
-    .join("\n");
-  const html = `<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>我的大屏</title>
-<style>body{font-family:sans-serif;background:#0f1115;color:#e6e6e6;padding:32px}
-a{color:#4c8dff;margin-right:8px}li{margin:10px 0}button{background:#ff4d4f;color:#fff;border:0;border-radius:4px;padding:2px 10px;cursor:pointer}</style></head>
-<body><h1>我的大屏（${escapeHtml(uid)}）</h1><ul>${rows || "<li>暂无大屏</li>"}</ul></body></html>`;
-  const script = `<script>
-async function del(id){ if(!confirm('确定删除 '+id+' 吗？')) return; await fetch('/api/v1/apps/'+encodeURIComponent(id),{method:'DELETE'}); location.reload(); }
-</script>`;
-  return new Response(html.replace("</h1><ul>", '</h1><p><a href="/workspace" style="color:#4c8dff">进入工作台</a></p><ul>').replace("</body>", script + "</body>"), {
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
-  });
 }
 
 // 生成物门户页：左固定可折叠对话 + 右生成物画廊/切换展示
@@ -275,14 +234,17 @@ async function appsList(request, env) {
   const manifest = await loadManifest(env, uid);
   const apps = manifest && manifest.apps ? manifest.apps : [];
   const lastPublish = (manifest && manifest._meta && manifest._meta.lastPublish) || 0;
-  const out = [];
-  for (const a of apps) {
+  // 并行探活 + 并行读 rev/spec 元信息（避免 N 个 app 串行、最坏 N×2s 拖垮门户轮询）
+  const tasks = apps.map(async (a) => {
     const dv = a.defaultVersion || Object.keys(a.versions || {})[0] || "v1";
-    const status = await probeApp(env, uid, a.id, dv);
-    const rev = await appRev(env, uid, a.id);
-    out.push({
+    const [status, rev, specMeta] = await Promise.all([
+      probeApp(env, uid, a.id, dv),
+      appRev(env, uid, a.id),
+      appSpecMeta(env, uid, a.id, dv),
+    ]);
+    return {
       id: a.id,
-      title: a.title || a.id,
+      title: (specMeta && specMeta.title) || a.title || a.id,
       description: a.description || "",
       createdAt: a.createdAt || null,
       type: a.type || "dashboard",
@@ -291,18 +253,44 @@ async function appsList(request, env) {
       versions: Object.keys(a.versions || {}),
       status,
       rev,
-    });
-  }
+    };
+  });
+  const out = await Promise.all(tasks);
   const ts = v => (typeof v === "number" ? v : Date.parse(v || "") || 0);
   out.sort((x, y) => ts(y.createdAt) - ts(x.createdAt));
   return json({ uid, lastPublish, apps: out });
+}
+
+// 读大屏 spec 元信息（标题等）：门户卡片标题的单一来源
+// 10s TTL 缓存：避免每 5 秒轮询反复拉 18KB spec（标题变更最多延迟 10s 反映到卡片）
+const specMetaCache = new Map();
+const SPEC_META_TTL = 10000;
+async function appSpecMeta(env, uid, appId, version) {
+  const key = uid + "/" + appId;
+  const hit = specMetaCache.get(key);
+  if (hit && Date.now() - hit.ts < SPEC_META_TTL) return hit.meta;
+  const target = env[serviceName(uid, appId, version)];
+  if (!target) return {};
+  try {
+    const res = await target.fetch("http://internal/svc/spec", {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return {};
+    const d = await res.json();
+    const spec = d && d.spec;
+    const meta = spec && typeof spec === "object" ? { title: spec.title } : {};
+    specMetaCache.set(key, { ts: Date.now(), meta });
+    return meta;
+  } catch (_) {
+    return {};
+  }
 }
 
 async function probeApp(env, uid, appId, version) {
   const target = env[serviceName(uid, appId, version)];
   if (!target) return "not_published";
   try {
-    const res = await target.fetch("http://internal/api/health", { signal: AbortSignal.timeout(2000) });
+    const res = await target.fetch("http://internal/svc/health", { signal: AbortSignal.timeout(2000) });
     return res.ok ? "running" : "error";
   } catch (_) {
     return "error";
@@ -328,32 +316,62 @@ async function appRev(env, uid, appId) {
   }
 }
 
-// 数据同步写回：转发 POST /api/refresh 到 app 默认版本（或 ?version= 指定）
-async function appsRefresh(request, env, url, m) {
-  const appId = m[1];
+// 修改大屏 spec：读 .selected 强制目标 app，结构校验后直接转发到该 App Worker 的
+// POST /svc/spec（写库 + SSE 广播，页面实时重绘）。Agent 无法自行指定目标。
+async function appsApplySpec(request, env) {
   const uid = readCookie(request.headers.get("Cookie") || "", "ws_user");
   if (!uid || !UID_RE.test(uid)) {
     return json({ code: "unauthorized", message: "missing ws_user cookie" }, 401);
   }
+  let body = {};
+  try {
+    body = await request.json();
+  } catch (_) {}
+  const spec = body && body.spec !== undefined ? body.spec : body;
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+    return json({ code: "bad_request", message: "spec must be a JSON object" }, 400);
+  }
+  if (!spec.name || !spec.title) {
+    return json({ code: "bad_request", message: "spec requires name and title" }, 400);
+  }
+  if (JSON.stringify(spec).length > 2 * 1024 * 1024) {
+    return json({ code: "bad_request", message: "spec too large" }, 400);
+  }
+  const sel = await readSelected(env, uid);
+  if (!sel || !sel.id) {
+    return json({ code: "bad_request", message: "no selected app (.selected)" }, 400);
+  }
+  const appId = String(sel.id);
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(appId)) {
+    return json({ code: "bad_request", message: "invalid selected app" }, 400);
+  }
   const manifest = await loadManifest(env, uid);
-  if (manifest === null) return json({ code: "not_found", message: "no apps registry" }, 404);
-  const app = (manifest.apps || []).find(a => a.id === appId);
+  const app = manifest && (manifest.apps || []).find(a => a.id === appId);
   if (!app) return json({ code: "not_found", message: `unknown app ${appId}` }, 404);
-  const version = url.searchParams.get("version") || app.defaultVersion;
+  const version = app.defaultVersion || Object.keys(app.versions || {})[0] || "v1";
   const v = app.versions && app.versions[version];
   if (!v) return json({ code: "not_found", message: `unknown version ${version}` }, 404);
   const target = env[serviceName(uid, appId, version)];
   if (!target) return json({ code: "internal_error", message: "service not bound" }, 503);
-  const headers = { "Content-Type": "application/json", "X-App-Id": appId, "X-App-Version": version };
-  const appToken = request.headers.get("X-App-Token");
-  if (appToken) headers["X-App-Token"] = appToken;
-  const next = new Request("http://internal/api/refresh", { method: "POST", headers, body: await request.text() });
+  console.log(`workerd: apps/apply-spec uid=${uid} target=${appId} -> /svc/spec`);
+  const next = new Request("http://internal/svc/spec", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-App-Id": appId, "X-App-Version": version },
+    body: JSON.stringify({ spec }),
+  });
   return target.fetch(next);
 }
 
 // 删除 app：注入 app_delete token 转发 dagu（摘除/归档/重建配置）
-async function appsDelete(request, env, m) {
-  const appId = m[1];
+async function appsDelete(request, env) {
+  let appId = "";
+  try {
+    const body = await request.json();
+    appId = (body && body.id) || "";
+  } catch (_) {}
+  if (!appId || !/^[A-Za-z0-9_-]{1,64}$/.test(appId)) {
+    return json({ code: "bad_request", message: "invalid app id" }, 400);
+  }
   const uid = readCookie(request.headers.get("Cookie") || "", "ws_user");
   if (!uid || !UID_RE.test(uid)) {
     return json({ code: "unauthorized", message: "missing ws_user cookie" }, 401);
@@ -381,7 +399,7 @@ async function appsSelect(request, env) {
   if (!appId || !/^[A-Za-z0-9_-]{1,64}$/.test(appId)) {
     return json({ code: "bad_request", message: "invalid app id" }, 400);
   }
-  const injected = new Request("http://internal/api/v1/apps/selected", {
+  const injected = new Request("http://internal/app/v1/select", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ payload: { uid, appId } }),
@@ -393,37 +411,6 @@ async function appsSelect(request, env) {
 //  - mode=www : 把用户工作区 temp/modify-www.html 应用到选中 app 的 www/index.html
 //  - mode=meta: 更新选中 app 的 apps.json title/description
 // 用户显式点名其他 app 时，agent 应先把 .selected 写为目标 app，再调用本接口。
-async function appsApply(request, env, mode) {
-  const uid = readCookie(request.headers.get("Cookie") || "", "ws_user");
-  if (!uid || !UID_RE.test(uid)) {
-    return json({ code: "unauthorized", message: "missing ws_user cookie" }, 401);
-  }
-  let body = {};
-  try {
-    body = await request.json();
-  } catch (_) {}
-  const sel = await readSelected(env, uid);
-  if (!sel || !sel.id) {
-    return json({ code: "bad_request", message: "no selected app (.selected)" }, 400);
-  }
-  const appId = String(sel.id);
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(appId)) {
-    return json({ code: "bad_request", message: "invalid selected app" }, 400);
-  }
-  const payload = { uid, appId, mode };
-  if (mode === "meta") {
-    payload.title = String(body.title || "").slice(0, 200);
-    payload.description = String(body.description || "").slice(0, 500);
-  }
-  console.log(`workerd: apps/apply-${mode} uid=${uid} target=${appId} -> dagu app_apply`);
-  const injected = new Request("http://internal/api/v1/apps/apply-" + mode, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ payload }),
-  });
-  return forwardToDagu(env, "app_apply", injected);
-}
-
 // 读当前选中标记：users/<uid>/workspace/.apps/.selected
 async function readSelected(env, uid) {
   try {

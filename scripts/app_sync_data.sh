@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# dagu-gate app_sync_data —— 定时同步：按每个 app 的 sync 配置（db + sql）查上游库，
-# 经网关 /api/v1/apps/<appId>/refresh 写回 App SQLite（分钟级实时）。
+# dagu-gate app_sync_data —— 定时数据同步（快照合并模式）
 #
-# 由 dagu 定时 DAG（app_sync_data）触发；支持 WEBHOOK_PAYLOAD 范围（{"payload":{"uid":...}}）。
-# 查询在用户容器内执行（容器有 DB 驱动与 db_sources.json），宿主无需安装驱动。
+# 每个 app 在 apps.json 里声明 sync 配置（agent 生成时写入）：
+#   "sync": {"script": "sync_merge.py"}
+# sync_merge.py 位于 .apps/<appId>/，在用户容器内执行（容器有 DB 驱动与 db_query.py）：
+#   1) GET /app/<port>/svc/spec 取当前 spec（快照，唯一数据源）；
+#   2) 查上游库（db_query.py）；
+#   3) 按 app 自身合并规则（key 合并，旧数据保留）生成新 spec；
+#   4) POST /app/<port>/svc/spec 写回（SSE 广播 → 页面实时重绘）。
+# 平台只负责"到点执行 + 汇报 + 记录 lastSync"，合并逻辑归各 app。
+#
+# 旧格式 sync: {db, sql}（写 items 多行）已废弃：不兼容即告警跳过。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAGU_ROOT="${DAGU_ROOT:-$(dirname "$SCRIPT_DIR")}"
-GATEWAY="${GATEWAY:-http://127.0.0.1:9090}"
 
 SCOPE_UID=""
 if [ -n "${WEBHOOK_PAYLOAD:-}" ]; then
@@ -17,16 +23,14 @@ p=json.loads(sys.argv[1]); p=p.get("payload",p); print(p.get("uid",""))' "$WEBHO
   echo "app_sync_data: scope uid=$SCOPE_UID"
 fi
 
-python3 - "$DAGU_ROOT" "$GATEWAY" "$SCOPE_UID" <<'PY'
+python3 - "$DAGU_ROOT" "$SCOPE_UID" <<'PY'
 import json
-import hashlib
 import os
 import subprocess
 import sys
 import time
-import urllib.request
 
-root, gateway, scope_uid = sys.argv[1], sys.argv[2], sys.argv[3]
+root, scope_uid = sys.argv[1], sys.argv[2]
 users_root = os.path.join(root, "users")
 
 for uid in sorted(os.listdir(users_root)):
@@ -42,61 +46,38 @@ for uid in sorted(os.listdir(users_root)):
         continue
     for app in manifest.get("apps", []):
         app_id = app.get("id")
-        version = app.get("defaultVersion")
-        v = (app.get("versions") or {}).get(version) or {}
-        sync = v.get("sync") or app.get("sync")
+        sync = app.get("sync")
         if not sync:
+            print(f"ERROR {uid}/{app_id}: 缺少 sync 配置（定时刷新必备，请生成 sync_merge.py 并登记 sync.script）")
             continue
-        # per-app token（M3）：版本开启 token 时派生并随 refresh 提交
-        app_token = ""
-        tok = v.get("token")
-        if tok is True:
-            secret_file = os.path.join(root, ".apps-secret")
-            if os.path.isfile(secret_file):
-                secret = open(secret_file, encoding="utf-8").read().strip()
-                unique_key = "app-%s-%s-%s" % (uid, app_id, version)
-                app_token = hashlib.sha256((secret + "|" + unique_key).encode()).hexdigest()[:32]
-        elif isinstance(tok, str) and tok:
-            app_token = tok
-        sql = sync.get("sql", "")
-        db = sync.get("db", "doris")
-        if not sql:
-            print(f"SKIP {uid}/{app_id}: sync.sql empty")
+        if sync.get("db") or sync.get("sql"):
+            print(f"SKIP {uid}/{app_id}: 旧版 sync{{db,sql}} 已废弃，请迁移为 sync.script（快照合并脚本）")
             continue
-        print(f"SYNC {uid}/{app_id} v{version} db={db}")
+        script = sync.get("script", "")
+        if not script:
+            print(f"SKIP {uid}/{app_id}: sync.script empty")
+            continue
+        script_path = os.path.join(users_root, uid, "workspace", ".apps", app_id, script)
+        if not os.path.isfile(script_path):
+            print(f"ERROR {uid}/{app_id}: merge script missing {script_path}")
+            continue
+        print(f"SYNC {uid}/{app_id} script={script}")
+        # 容器内执行：/workspace 与宿主机同源挂载
         cmd = [
             "docker", "exec", f"dagu-u-{uid}", "python3",
-            "/workspace/version0802/agents_gen/scripts/db_query.py",
-            "--source", db, "--sql", sql, "--limit", "5000",
+            f"/workspace/.apps/{app_id}/{script}",
         ]
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         except Exception as e:
-            print(f"ERROR {uid}/{app_id}: query exec failed: {e}")
+            print(f"ERROR {uid}/{app_id}: exec failed: {e}")
             continue
-        try:
-            res = json.loads(out.stdout)
-        except Exception:
-            print(f"ERROR {uid}/{app_id}: bad db_query output: {out.stdout[:200]}")
+        if out.returncode != 0:
+            print(f"ERROR {uid}/{app_id}: script failed rc={out.returncode}: {out.stdout[-300:]} {out.stderr[-300:]}")
             continue
-        if not res.get("ok"):
-            print(f"ERROR {uid}/{app_id}: db_query not ok: {out.stdout[:200]}")
-            continue
-        items = [dict(zip(res.get("columns", []), row)) for row in res.get("rows", [])]
-        body = json.dumps({"items": items}).encode()
-        url = f"{gateway}/api/v1/apps/{app_id}/refresh"
-        hdrs = {"Content-Type": "application/json", "Cookie": f"ws_user={uid}"}
-        if app_token:
-            hdrs["X-App-Token"] = app_token
-        req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                print(f"OK {uid}/{app_id}: refresh status={r.status} rows={len(items)}")
-                # 记录最后同步时间（供 app_status 巡检）
-                meta = manifest.get("_meta") or {}
-                meta["lastSync"] = time.time()
-                manifest["_meta"] = meta
-                json.dump(manifest, open(reg, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"ERROR {uid}/{app_id}: refresh failed: {e}")
+        print(f"OK {uid}/{app_id}: {out.stdout.strip()[-200:]}")
+        meta = manifest.get("_meta") or {}
+        meta["lastSync"] = time.time()
+        manifest["_meta"] = meta
+        json.dump(manifest, open(reg, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 PY

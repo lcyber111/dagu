@@ -105,4 +105,4 @@ if [ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME")" != "tru
 fi
 
 wait_ready
-echo "user_start: done uid=$UID_VAL url=$GATEWAY_PUBLIC_BASE_URL/u/$UID_VAL"
+echo "user_start: done uid=$UID_VAL url=$GATEWAY_PUBLIC_BASE_URL/portal/u/$UID_VAL"

@@ -4,10 +4,39 @@ const cardsEl = $("cards"), emptyEl = $("empty");
 let selected = null; // {id, port, defaultVersion, title, status, rev}
 let lastPublish = 0;
 
+const deletingIds = new Set();
+let frameSeq = 0, frameTimer = null, frameTries = 0;
+const FRAME_RETRY_MAX = 3, FRAME_RETRY_DELAY = 1500;
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+let toastTimer = null;
+function toast(msg, isErr) {
+  const t = $("toast");
+  if (!t) return;
+  t.textContent = msg;
+  t.className = "toast show" + (isErr ? " error" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = "toast"; }, 3000);
+}
+
+function showFrameLoading() { const o = $("frameLoading"); if (o) o.style.display = "flex"; }
+function hideFrameLoading() { const o = $("frameLoading"); if (o) o.style.display = "none"; }
+
+function findDelBtn(id) {
+  for (const c of cardsEl.children) if (c.dataset.id === id) return c.querySelector(".del");
+  return null;
+}
+function setDelBtn(btn, disabled, text) {
+  if (!btn) return;
+  btn.disabled = disabled;
+  btn.textContent = text;
+}
+
 async function loadList() {
   let d;
   try {
-    d = await fetch("/api/v1/apps", { cache: "no-store" }).then(r => r.json());
+    d = await fetch("/app/v1/list", { cache: "no-store" }).then(r => r.json());
   } catch (_) { return; }
   const prevPub = lastPublish;
   lastPublish = d.lastPublish || 0;
@@ -39,7 +68,7 @@ async function loadList() {
       '<div class="meta">' + esc(a.id) + " · v" + esc(a.defaultVersion) + " · 端口 " + a.port + " · " + esc(statusText(a.status)) + "</div>" +
       (a.description ? '<div class="desc">' + esc(a.description) + "</div>" : "") +
       '<div class="actions">' +
-        '<a href="/app-proxy/' + a.port + '/" target="_blank" rel="noopener">新标签</a>' +
+        '<a href="/app/' + a.port + '/" target="_blank" rel="noopener">新标签</a>' +
         '<button class="del" data-id="' + esc(a.id) + '">删除</button>' +
       "</div>";
     c.onclick = e => {
@@ -49,6 +78,7 @@ async function loadList() {
     c.querySelector(".del").onclick = e => { e.stopPropagation(); delApp(a.id); };
     cardsEl.appendChild(c);
   }
+  for (const id of deletingIds) setDelBtn(findDelBtn(id), true, "删除中…");
 }
 
 function selectApp(a, userInitiated) {
@@ -58,7 +88,7 @@ function selectApp(a, userInitiated) {
   // 只允许用户显式点击写 .selected：自动选中（页面加载/多标签页轮询）不写，
   // 避免把用户刚点选的轻应用覆盖成默认值
   if (userInitiated) {
-    fetch("/api/v1/apps/selected", {
+    fetch("/app/v1/select", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: a.id }),
@@ -68,7 +98,7 @@ function selectApp(a, userInitiated) {
   $("pver").textContent = "v" + a.defaultVersion;
   $("pstatus").textContent = statusText(a.status);
   $("pstatus").className = "badge " + (a.status === "running" ? "running" : "error");
-  $("popen").href = "/app-proxy/" + a.port + "/";
+  $("popen").href = "/app/" + a.port + "/";
   $("previewBar").style.display = "flex";
   if (changed || userInitiated) loadFrame();
 }
@@ -84,7 +114,41 @@ function loadFrame() {
   const old = $("frame");
   const n = old.cloneNode(false);
   old.parentNode.replaceChild(n, old); // 销毁旧 iframe，避免残留连接
-  n.src = "/app-proxy/" + selected.port + "/?version=" + selected.defaultVersion + "&t=" + Date.now();
+  frameSeq++;
+  const seq = frameSeq;
+  frameTries = 0;
+  clearTimeout(frameTimer);
+  showFrameLoading();
+  const url = "/app/" + selected.port + "/?version=" + selected.defaultVersion + "&t=" + Date.now();
+  scheduleFrame(url, seq);
+}
+
+function scheduleFrame(url, seq) {
+  if (frameTries >= FRAME_RETRY_MAX) {
+    hideFrameLoading();
+    toast("预览加载失败，请稍后手动刷新", true);
+    return;
+  }
+  frameTries++;
+  showFrameLoading();
+  fetch(url, { cache: "no-store" })
+    .then(r => {
+      if (seq !== frameSeq) return; // 已切换到其他卡片，丢弃过期响应
+      if (r.ok) {
+        hideFrameLoading();
+        $("frame").src = url;
+      } else if (r.status >= 500) {
+        // workerd 配置热重载窗口：稍后自动重试
+        frameTimer = setTimeout(() => scheduleFrame(url, seq), FRAME_RETRY_DELAY);
+      } else {
+        hideFrameLoading();
+        toast("预览不可用（HTTP " + r.status + "）", true);
+      }
+    })
+    .catch(() => {
+      if (seq !== frameSeq) return;
+      frameTimer = setTimeout(() => scheduleFrame(url, seq), FRAME_RETRY_DELAY);
+    });
 }
 
 function closePreview() {
@@ -94,10 +158,58 @@ function closePreview() {
 }
 
 async function delApp(id) {
+  if (deletingIds.has(id)) return;
   if (!confirm("确定删除生成物 " + id + " 吗？（会归档并可恢复）")) return;
-  await fetch("/api/v1/apps/" + encodeURIComponent(id), { method: "DELETE" });
-  if (selected && selected.id === id) selected = null;
-  loadList();
+  deletingIds.add(id);
+  setDelBtn(findDelBtn(id), true, "删除中…");
+  try {
+    // 1) 提交删除（dagu webhook 异步入队）；5xx/网络错误自动重试一次，吃掉重载窗口
+    let res = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        res = await fetch("/app/v1/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id }),
+        });
+        if (res.ok || res.status < 500) break;
+      } catch (_) { res = null; }
+      await sleep(800);
+    }
+    if (!res || !res.ok) {
+      toast("删除请求失败（HTTP " + (res ? res.status : "网络错误") + "），请重试", true);
+      return;
+    }
+    // 2) 轮询列表，等 dagu 真正删除完成（异步 DAG + workerd 重载，最长 15s）
+    const gone = await waitAppGone(id);
+    if (!gone) {
+      toast("删除未在预期时间内完成，卡片已保留，请稍后刷新确认", true);
+      return;
+    }
+    if (selected && selected.id === id) selected = null;
+    toast("已删除 " + id);
+  } catch (_) {
+    toast("删除失败，请重试", true);
+  } finally {
+    deletingIds.delete(id);
+    setDelBtn(findDelBtn(id), false, "删除");
+    loadList();
+  }
+}
+
+async function waitAppGone(id, timeoutMs = 15000, intervalMs = 800) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch("/app/v1/list", { cache: "no-store" });
+      if (r.ok) {
+        const d = await r.json();
+        if (!(d.apps || []).some(a => a.id === id)) return true;
+      }
+    } catch (_) {}
+    await sleep(intervalMs);
+  }
+  return false;
 }
 
 function statusText(s) {

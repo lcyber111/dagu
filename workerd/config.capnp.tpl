@@ -3,6 +3,7 @@
 #   {{DAGU_ROOT}}    -> 部署根目录
 #   {{DAGU_API_HOST}} -> dagu 管理服务地址（host:port）
 #   {{WORKERD_PORT}} -> workerd 监听端口（默认 9090）
+#   {{WORKERD_BIND}} -> workerd 监听地址（默认 172.17.0.1，仅 docker 网桥可达）
 using Workerd = import "/workerd/workerd.capnp";
 
 const config :Workerd.Config = (
@@ -15,7 +16,7 @@ const config :Workerd.Config = (
     (name = "tokens", disk = "{{DAGU_ROOT}}/.webhook-tokens"),
   ],
   sockets = [
-    ( name = "http", address = "*:{{WORKERD_PORT}}", http = (), service = "main" ),
+    ( name = "http", address = "{{WORKERD_BIND}}:{{WORKERD_PORT}}", http = (), service = "main" ),
   ],
 );
 

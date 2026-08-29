@@ -20,12 +20,12 @@ token 注入）。逻辑一多，Caddyfile 就变得绕、难读、难维护。
 浏览器
   │
   ▼
-Caddy (:9088 公网) ──┬── 数据面：用户容器流量（页面、静态资源、WebSocket/SSE、
-                     │         /app-proxy、启动页 502、无 Cookie 401、活动日志）
+  Caddy (:9088 公网) ──┬── 数据面：用户容器流量（页面、静态资源、WebSocket/SSE、
+                     │         /app/<port> App Worker 数据面、启动页 502、白名单之外 404、活动日志）
                      │         → 直接代理到 dagu-u-{uid}:4096（完全不变）
                      │
-                     └── 控制面：/u/*、/api/v1/health、/api/v1/webhooks/*、
-                                 /api/v1/restart/* → 转发给 workerd (:9090)
+                     └── 控制面：/portal/*、/app/v1/*、/api/v1/health、
+                                 /api/v1/webhooks/*、/api/v1/restart/* → 转发给 workerd (:9090)
                                                        │
                                                        ▼
                                                  dagu（编排）/ 门户
@@ -38,7 +38,9 @@ workerd 只处理低频的控制面请求。
 
 | 路径 | workerd 做什么 |
 | --- | --- |
-| `/u/{uid}`（含任意后缀） | 校验 uid 格式（`^[A-Za-z0-9_-]{1,64}$`）→ 写 `ws_user` Cookie → 302 到 `/`；uid 不合法返回 400 |
+| `/portal/u/{uid}` | 校验 uid 格式（`^[A-Za-z0-9_-]{1,64}$`）→ 写 `ws_user` Cookie → 302 到 `/portal`；uid 不合法返回 400 |
+| `/portal`、`/portal/*` | 门户页与静态资产（disk 绑定 `$DAGU_ROOT/portal/`） |
+| `/app/v1/*` | 轻应用控制面（list/sync/select/delete/refresh/apply，内部校验 Cookie） |
 | `/api/v1/health` | 返回 `{"status":"healthy","timestamp":...}` |
 | `/api/v1/webhooks/*` | 校验调用方 Bearer token（对照 `.webhook-tokens/` 里的文件）→ 原样透传给 dagu，不改请求体 |
 | `/api/v1/restart/*` | 浏览器直连、无外部 token → workerd 从文件读 token 并注入 → 转发 dagu `user_start` webhook |
@@ -48,7 +50,7 @@ workerd 只处理低频的控制面请求。
 
 - 用户容器数据面代理（WebSocket/SSE 等长连接）
 - 容器不可达 502 → 启动页（含 JS 自动恢复）——阶段一不碰
-- 无 Cookie 访问数据面 → 401 提示
+- 无 Cookie / 未知路径访问 → 404（统一错误兜底）
 - 活动日志（`reap_idle` 判活依赖它）保持不变
 
 ### 4. 运行与部署
@@ -72,8 +74,9 @@ workerd 只处理低频的控制面请求。
 
 ## 数据流示例
 
-**正常访问**：用户点 `/u/usr_01` → Caddy 转给 workerd → workerd 写 Cookie、
-302 到 `/` → 浏览器带 Cookie 访问 `/` → Caddy 直接代理到容器（不经过 workerd）。
+**正常访问**：用户点 `/portal/u/usr_01` → Caddy 转给 workerd → workerd 写 Cookie、
+302 到 `/portal` → 门户页加载；打开工作区/大屏时，浏览器带 Cookie 的请求由 Caddy
+直接代理到目标（不经过 workerd）。
 
 **容器被回收后**：用户访问 `/` → Caddy 代理失败（502）→ 返回启动页 →
 页面 JS 调 `/api/v1/restart/usr_01` → Caddy 转给 workerd → workerd 注入 token
@@ -91,4 +94,3 @@ workerd 只处理低频的控制面请求。
 - 阶段二：启动页 502 判断收编进 workerd（届时优先走 dagu 只读接口，不碰 docker socket）
 - 阶段三：登录/鉴权、限流、门户对接
 - 阶段一不感知容器状态
-

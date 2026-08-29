@@ -66,6 +66,7 @@ STOP_TIMEOUT="${STOP_TIMEOUT:-30}"
 START_PAGE_REFRESH="${START_PAGE_REFRESH:-5}"
 REAP_CRON="${REAP_CRON:-* * * * *}"
 WORKERD_PORT="${WORKERD_PORT:-9090}"
+WORKERD_BIND="${WORKERD_BIND:-172.17.0.1}"
 # Caddy 容器运行用户：默认自动取当前登录用户（用什么用户装就用什么用户跑）。
 GATEWAY_UID="${GATEWAY_UID:-$(id -u)}"
 GATEWAY_GID="${GATEWAY_GID:-$(id -g)}"
@@ -75,11 +76,6 @@ echo "install: gateway=$GATEWAY_PUBLIC_BASE_URL network=$DOCKER_NETWORK"
 
 echo "== [1/9] layout =="
 mkdir -p "$ROOT"/{dags,data,users,archive,scripts,gateway,templates,.webhook-tokens,logs,workerd}
-# 平台级 secret：用于派生 per-app token（M3）
-if [ ! -f "$ROOT/.apps-secret" ]; then
-  head -c 32 /dev/urandom | base64 > "$ROOT/.apps-secret"
-  echo "generated .apps-secret"
-fi
 
 echo "== [2/9] stop old dagu/workerd =="
 # Stop dagu/workerd BEFORE overwriting their binaries: Linux refuses to
@@ -212,15 +208,16 @@ echo "config written to $CONFIG_PATH"
 # Render workerd config (control-plane logic service).
 WORKERD_CONFIG="$ROOT/workerd/config.capnp"
 DAGU_API_HOST="${DAGU_API#http://}"
-"$PYTHON3" - "$PKG_ROOT/workerd/config.capnp.tpl" "$WORKERD_CONFIG" "$ROOT" "$DAGU_API_HOST" "$WORKERD_PORT" <<'PYEOF'
+"$PYTHON3" - "$PKG_ROOT/workerd/config.capnp.tpl" "$WORKERD_CONFIG" "$ROOT" "$DAGU_API_HOST" "$WORKERD_PORT" "$WORKERD_BIND" <<'PYEOF'
 import sys
 
-src, dst, root, api_host, port = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+src, dst, root, api_host, port, bind = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 with open(src, encoding="utf-8") as fh:
     data = fh.read()
 data = data.replace("{{DAGU_ROOT}}", root)
 data = data.replace("{{DAGU_API_HOST}}", api_host)
 data = data.replace("{{WORKERD_PORT}}", port)
+data = data.replace("{{WORKERD_BIND}}", bind)
 with open(dst, "w", encoding="utf-8") as fh:
     fh.write(data)
 print("workerd config written to %s" % dst)
@@ -276,7 +273,7 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
-for dag in user_create user_delete user_start app_sync app_delete app_select app_apply; do
+for dag in user_create user_delete user_start app_sync app_delete app_select; do
   RESP=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" "$DAGU_API/api/v1/dags/$dag/webhook")
   WT=$(printf '%s' "$RESP" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   if [ -z "$WT" ]; then
@@ -309,7 +306,7 @@ echo $! > "$ROOT/workerd/workerd.pid"
 
 WORKERD_OK=no
 for _ in $(seq 1 10); do
-  if curl -s --max-time 2 "http://127.0.0.1:$WORKERD_PORT/api/v1/health" \
+if curl -s --max-time 2 "http://$WORKERD_BIND:$WORKERD_PORT/api/v1/health" \
       | grep -q '"healthy"'; then
     WORKERD_OK=yes
     break
@@ -335,7 +332,7 @@ docker run --rm \
 docker compose up -d --force-recreate
 
 echo "install complete. webhook tokens:"
-for dag in user_create user_delete user_start app_sync app_delete app_select app_apply; do
+for dag in user_create user_delete user_start app_sync app_delete app_select; do
   echo "  $dag: $(cat "$ROOT/.webhook-tokens/$dag.token")"
 done
 echo "workerd: pid $(cat "$ROOT/workerd/workerd.pid") on :$WORKERD_PORT, log $ROOT/logs/workerd-access.log"

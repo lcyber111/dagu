@@ -21,7 +21,7 @@ OpenCode Web，网关负责路由、鉴权、按需创建/销毁/回收这些容
   ▼
 Caddy (:9088)        数据面：把用户流量代理进容器；记录活动日志；容器挂了返回启动页
   │
-  ├── 控制面 /u/*、/api/v1/*  ──► workerd (:9090)   业务逻辑判断（JS）
+  ├── 控制面 /portal/*、/api/v1/*、/app/v1/*  ──► workerd (:9090)   业务逻辑判断（JS）
   │                                    │
   │                                    ▼
   │                              dagu (:18080)      任务编排引擎
@@ -57,11 +57,11 @@ JS 层；workerd 只处理低频的控制面请求（跳转、webhook、健康�
 ### 1. Caddy（容器，公网 9088）
 
 - 数据面：把带 `ws_user` Cookie 的请求代理到 `dagu-u-{uid}:4096`，透传
-  WebSocket/SSE，处理 `/app-proxy/<port>` 子应用
-- 控制面：把 `/u/*`、`/api/v1/*` 原样转发给 workerd(:9090)
+  WebSocket/SSE；`/app/<port>` 子应用（App Worker 数据面）转发宿主机 workerd 分发
+- 控制面：把 `/portal/*`、`/api/v1/*`、`/app/v1/*` 原样转发给 workerd(:9090)
 - 活动日志：每个请求写一行 JSON，`log_append` 把 Cookie 里的 uid 记进日志
 - 启动页：容器不可达（502）且带 Cookie、非 `/api/` 路径时，返回“正在启动”页面
-- 兜底：无 Cookie 访问数据面返回 401
+- 兜底：白名单之外（无 Cookie / 未知路径）统一返回 404
 
 ### 2. workerd（进程，9090）
 
@@ -69,7 +69,10 @@ JS 层；workerd 只处理低频的控制面请求（跳转、webhook、健康�
 
 | 路径 | 行为 |
 | --- | --- |
-| `/u/{uid}` | 校验 uid → 写 `ws_user` Cookie → 302 到 `/`；非法 uid 返回 400 |
+| `/portal/u/{uid}` | 校验 uid → 写 `ws_user` Cookie → 302 到 `/portal`；非法 uid 返回 400 |
+| `/portal`、`/portal/*` | 门户页与静态资产（disk 绑定 `$DAGU_ROOT/portal/`） |
+| `/app/v1/*` | 轻应用控制面（list/sync/select/delete/apply/spec，内部校验 Cookie；refresh/apply/www/apply/meta 已删除） |
+| `/app/<port>[/...]` | App Worker 数据面：按注册表分发到 app-<uid>-<appId>-<ver> service |
 | `/api/v1/health` | 返回 `{"status":"healthy","timestamp":...}` |
 | `/api/v1/webhooks/*` | 校验 Bearer token（对照 token 文件）→ 原样透传给 dagu |
 | `/api/v1/restart/{uid}` | 浏览器直连、无外部 token → 注入 user_start 的 token → 转发 dagu |
@@ -99,7 +102,7 @@ opencode 配置，用 `--cpus`/`--memory` 限制资源。
 ## 四、访问规则（Caddy 路由）与举例
 
 请求进入 Caddy 后，规则是**从上到下依次匹配、命中即停**。总口诀：
-**先认路径（`/api/v1`、`/u`），再认 Cookie（进谁的容器），最后才是 401 和启动页两个兜底。**
+**先认路径（`/api/v1`、`/portal`、`/app`），再认 Cookie（进谁的容器），最后才是统一 404 和启动页两个兜底。**
 
 ### 规则 0：全局设置 + 访问日志（影响所有请求）
 
@@ -137,10 +140,13 @@ curl -X POST http://192.168.252.131:9088/api/v1/restart/usr_test01
 # → workerd，注入 token 后转给 dagu 的 user_start
 ```
 
-### 规则 2：`/u/*` → 转发给 workerd（写 Cookie + 跳转）
+### 规则 2：`/portal/*` → 转发给 workerd（门户入口 + 门户页/静态资产）
 
 ```caddyfile
-handle /u/* {
+handle /portal/* {
+    reverse_proxy 172.17.0.1:9090
+}
+handle /portal {
     reverse_proxy 172.17.0.1:9090
 }
 ```
@@ -148,41 +154,31 @@ handle /u/* {
 举例（即使带了 Cookie，也走这条，不会直接进容器）：
 
 ```bash
-curl -i http://192.168.252.131:9088/u/usr_test01
-# → workerd → 302，响应头：Location: / 和 Set-Cookie: ws_user=usr_test01
+curl -i http://192.168.252.131:9088/portal/u/usr_test01
+# → workerd → 302，响应头：Location: /portal 和 Set-Cookie: ws_user=usr_test01
+
+curl -i http://192.168.252.131:9088/portal
+# → workerd → 门户页（左侧 OpenCode 对话 + 右侧生成物画廊）
 ```
 
-### 规则 3：`/site.webmanifest` → 直接返回清单
-
-PWA 站点清单，浏览器加载页面时可能请求，Caddy 直接回固定 JSON，不进容器。
-
-### 规则 4：`/favicon.ico` → 返回 200 空
-
-浏览器自动请求的网站图标，直接回 200 空响应，省得往容器转发一次。
-
-### 规则 5：带 `ws_user` Cookie → 进容器（核心规则）
+### 规则 3：带 `ws_user` Cookie → 进容器（核心规则）
 
 ```caddyfile
 @get_user header_regexp cookie_user Cookie (?:^|;\s*)ws_user=([a-zA-Z0-9_.-]+)
 ```
 
-Caddy 用正则从 Cookie 里抠出 uid，拼成 `dagu-u-{uid}` 转发。里面分三种情况：
+Caddy 用正则从 Cookie 里抠出 uid，拼成 `dagu-u-{uid}` 转发。里面分两种情况：
 
-**5a. `/app-proxy/<端口>/<路径>` → 容器的那个端口**
-
-```bash
-curl -H "Cookie: ws_user=usr_test01" http://192.168.252.131:9088/app-proxy/8000/hello
-# → 转发到 dagu-u-usr_test01:8000，路径重写为 /hello
-```
-
-**5b. `/app-proxy/<端口>`（无尾巴）→ 容器的那个端口根路径**
+**5a. `/app/<端口>[/<路径>]` → 宿主机 workerd，App Worker 数据面（根路径与子路径同一规则）**
 
 ```bash
-curl -H "Cookie: ws_user=usr_test01" http://192.168.252.131:9088/app-proxy/8000
-# → 转发到 dagu-u-usr_test01:8000，路径重写为 /
+curl -H "Cookie: ws_user=usr_test01" http://192.168.252.131:9088/app/20014/svc/health
+# → 转发到 workerd(:9090)，按注册表分发到 app-usr_test01-<appId>-v1
+curl -H "Cookie: ws_user=usr_test01" http://192.168.252.131:9088/app/20014
+# → workerd → App Worker 首页
 ```
 
-**5c. 其余所有路径 → 容器 4096（OpenCode 主应用）**
+**5b. 其余所有路径 → 容器 4096（OpenCode 主应用）**
 
 ```bash
 curl -H "Cookie: ws_user=usr_test01" http://192.168.252.131:9088/
@@ -194,11 +190,14 @@ curl -H "Cookie: ws_user=usr_test01" http://192.168.252.131:9088/global/health
 转发时 Caddy 还会改写 `Host: localhost:4096`、`Origin`、`X-Forwarded-*` 等请求头，
 让容器里的 OpenCode 以为请求来自本机。
 
-### 规则 6：没有 Cookie → 401
+### 规则 6：统一错误兜底（白名单之外 → 404）
+
+门户/控制面/数据面白名单全部未命中（无 Cookie、未知路径）时，
+落到最后一个兜底直接返回 404，不保留任何旧路径兼容、不显示引导页：
 
 ```caddyfile
 handle {
-    respond "错误：未检测到有效会话，请重新从门户链接 /u/{UID} 进入工作区！" 401
+	respond "not found" 404
 }
 ```
 
@@ -206,7 +205,11 @@ handle {
 
 ```bash
 curl http://192.168.252.131:9088/
-# → 401，提示未检测到有效会话
+# → 404（无 Cookie，白名单之外）
+curl http://192.168.252.131:9088/workspace
+# → 404（旧路径，无专门路由）
+curl http://192.168.252.131:9088/apps
+# → 404（旧路径，无专门路由）
 ```
 
 ### 规则 7：出错兜底 handle_errors（502 → 启动页）
@@ -214,10 +217,10 @@ curl http://192.168.252.131:9088/
 这条不是按路径匹配，而是**前面任何一步返回 502 时**触发，三个条件同时满足：
 
 ```caddyfile
-@stopped expression `{err.status_code} == 502 && {http.request.cookie.ws_user} != "" && ({http.request.uri.path}.startsWith("/api/") == false)`
+@stopped expression `{err.status_code} == 502 && {http.request.cookie.ws_user} != "" && ({http.request.uri.path}.startsWith("/api/") == false) && ({http.request.uri.path}.startsWith("/app/") == false) && ({http.request.uri.path}.startsWith("/portal/") == false)`
 ```
 
-即：错误是 502、带了 `ws_user` Cookie、路径不是 `/api/` 开头。
+即：错误是 502、带了 `ws_user` Cookie、路径不是 `/api/`、`/app/`、`/portal/` 开头。
 
 举例（容器被回收后用户刷新页面）：
 
@@ -234,26 +237,29 @@ curl http://192.168.252.131:9088/
 请求进来
   │
   ├─ /api/v1/*         → workerd（规则1）
-  ├─ /u/*              → workerd（规则2）
-  ├─ /site.webmanifest → 静态 JSON（规则3）
-  ├─ /favicon.ico      → 200 空（规则4）
-  ├─ 带 ws_user Cookie（规则5）
-  │     ├─ /app-proxy/<port>/<path> → 容器:port/path（5a）
-  │     ├─ /app-proxy/<port>        → 容器:port/（5b）
-  │     └─ 其他                      → 容器:4096（5c）
-  ├─ 都没有 → 401（规则6）
-  └─ （任何一步 502）→ 启动页（规则7）
+  ├─ /app/v1/*         → workerd（规则1b：轻应用控制面）
+  ├─ /portal/*、/portal → workerd（规则2）
+  ├─ 带 ws_user Cookie（规则3）
+  │     ├─ /app/<port>[/...]  → workerd 按注册表分发（5a）
+  │     └─ 其他               → 容器:4096（5b，OpenCode 主应用）
+  └─ 白名单之外 → 404（规则6，统一错误兜底）
+  └─ （任何一步 502）→ 启动页（规则7，/api/ /app/ /portal/ 前缀除外）
 ```
 
 ### 一张表总结
 
 | 路径 | 带 Cookie？ | 最终去向 | 结果 |
 | --- | --- | --- | --- |
-| `/api/v1/*` | 带或不带都行 | workerd:9090 | 控制面逻辑 |
-| `/u/xxx` | 带或不带都行 | workerd:9090 | 写 Cookie + 302 |
-| `/`、`/new-session...`、静态资源 | 带 | 容器:4096 | 工作区页面 |
-| `/app-proxy/<port>/...` | 带 | 容器:<port> | 子应用 |
-| 任意数据面路径 | 不带 | 无 | 401 |
+| `/api/v1/*` | 带或不带都行 | workerd:9090 | dagu 平台控制面 |
+| `/app/v1/*` | 带或不带都行 | workerd:9090 | 轻应用控制面（内部校验 Cookie） |
+| `/portal/u/{uid}`、`/portal` | 带或不带都行 | workerd:9090 | 门户入口 / 门户页 |
+| `/app/<port>[/...]` | 带 | workerd:9090 | App Worker 数据面 |
+| `/`、`/new-session...`、静态资源 | 带 | 容器:4096 | OpenCode 工作区页面 |
+| 白名单之外任意路径 | 不带 | 无 | 404 |
+
+> 路由面采用**白名单 + 统一错误兜底**：旧路径（`/workspace`、`/app-proxy`、`/u/`、
+> `/apps`、`/mdview` 等）在网关层**不做任何专门路由**——带 Cookie 时被 OpenCode 主应用
+> （SPA，全路径）吸收，无 Cookie 时落入统一兜底 **404**。门户入口统一为 `/portal/u/{uid}`。
 
 ## 五、各功能的实现要点与举例
 
@@ -288,22 +294,22 @@ curl -X POST http://192.168.252.131:9088/api/v1/webhooks/user_create \
 # 返回 {"dagName":"user_create","dagRunId":"..."}，容器在后台约 30~60 秒就绪
 ```
 
-### 功能 2：用户入口 `/u/{uid}`（写 Cookie + 跳转）
+### 功能 2：门户入口 `/portal/u/{uid}`（写 Cookie + 跳转）
 
 **为什么这样设计**：用户容器是动态命名的 `dagu-u-{uid}`，浏览器直接访问不了容器名，
-需要网关按 uid 路由。但 `/u/{uid}` 本身不接触容器，它只做两件事：写 Cookie、跳首页。
+需要网关按 uid 路由。但 `/portal/u/{uid}` 本身不接触容器，它只做两件事：写 Cookie、跳门户。
 
 **链路**：
 
 ```
-浏览器 GET /u/usr_test01
+浏览器 GET /portal/u/usr_test01
   → Caddy 转发给 workerd
   → workerd 校验 uid，返回 302 + Set-Cookie: ws_user=usr_test01
-  → 浏览器带着 Cookie 访问 /
-  → Caddy 看到 Cookie，代理到 dagu-u-usr_test01:4096
+  → 浏览器带着 Cookie 访问 /portal（门户：左侧对话 + 右侧生成物）
+  → 门户内 iframe 打开工作区/大屏时，Caddy 看到 Cookie 代理到对应目标
 ```
 
-**技术要点**：Cookie 是后续所有路由的“钥匙”；`/u/{uid}` 不算“活动”（它没碰容器）。
+**技术要点**：Cookie 是后续所有路由的“钥匙”；`/portal/u/{uid}` 不算“活动”（它没碰容器）。
 
 ### 功能 3：空闲回收（reap_idle）
 
@@ -383,7 +389,7 @@ curl -X POST http://192.168.252.131:9088/api/v1/webhooks/user_delete \
 | 术语 | 定义 |
 | --- | --- |
 | uid | 用户唯一标识，`^[A-Za-z0-9_-]{1,64}$`，用于容器名 `dagu-u-{uid}` 和数据目录 `users/{uid}` |
-| 活动 | 带 `ws_user` Cookie 且被代理到容器的请求；`/u/{uid}` 入口不算 |
+| 活动 | 带 `ws_user` Cookie 且被代理到容器的请求；`/portal/u/{uid}` 入口不算 |
 | 最后活动时间 | max(活动日志里该 uid 的最后请求时间, 容器创建时间) |
 | 空闲回收 | 空闲超过 `IDLE_TIMEOUT_MINUTES`（默认 360 分钟）→ `docker stop` |
 | webhook token | dagu 生成的鉴权 token，存在 `.webhook-tokens/`，门户和 workerd 用它鉴权 |
@@ -398,7 +404,7 @@ curl -X POST http://192.168.252.131:9088/api/v1/webhooks/user_delete \
    POST /api/v1/webhooks/user_create → 创建容器 dagu-u-usr_test01，等 4096 就绪
 
 2. 用户首次进入
-   GET /u/usr_test01 → 写 Cookie → 302 → / → 进入 OpenCode 工作区
+   GET /portal/u/usr_test01 → 写 Cookie → 302 → /portal → 门户（对话 + 生成物）
 
 3. 用户日常使用
    所有请求经 Caddy 代理，不断刷新“最后活动时间”
@@ -444,39 +450,39 @@ dagu-run/
 
 ### 定位
 
-大屏从"生成期静态快照"演进为"运行时应用"：**每个大屏 = 宿主机 workerd 内的一个 App Worker（独立 service/isolate）**，agent 编写完整 ES 模块（worker.js），前端经 disk 绑定托管、数据存 DO SQLite、运行时经 /api/data 读取、WebSocket 实时推送。控制面 workerd 兼任 router（按注册表分发）。详见 ADR-0003。
+大屏从"生成期静态快照"演进为"运行时应用"：**每个大屏 = 宿主机 workerd 内的一个 App Worker（独立 service/isolate）**，agent 编写完整 ES 模块（worker.js），前端经 disk 绑定托管、数据存 DO SQLite（快照模式：仅一行 spec）、spec 经 /svc/spec 入库并由页面运行时拉取渲染、实时推送走 /svc/events（SSE，内部 WebSocket 桥接 Hub DO）。控制面 workerd 兼任 router（按注册表分发）。详见 ADR-0003。
 
 ### 架构图（叠加在既有链路上）
 
 ``
-浏览器（/apps 列表页 · 新标签页打开大屏）
-   │  /apps、/api/v1/*、/u/*、/app-proxy/2xxxx
+浏览器（/portal 门户页 · 新标签页打开大屏）
+   │  /portal、/api/v1/*、/app/v1/*、/app/2xxxx
 Caddy :9088 ──────────────────────────────
-   ├─ /api/v1/*、/u/*、/apps/* → workerd :9090（单进程）
+   ├─ /api/v1/*、/portal/*、/app/v1/*、/app/2xxxx → workerd :9090（单进程）
    │     ├─ gatewayWorker：控制面 + router（每请求读 apps.json）
    │     ├─ app-<uid>-<appId>-<version> × N（独立 service/isolate）
-   │     │     ├─ worker.js（agent 编写；页面 + /api/data CRUD + SQLite + /api/ws）
+   │     │     ├─ worker.js（agent 编写；页面 + /svc/spec + SQLite + /svc/events SSE）
    │     │     ├─ www/（disk）· lib（共享 app-libs）· data-<ver>（SQLite, writable）
-   │     │     └─ DO：AppStore（enableSql）+ Hub（WebSocket Hibernation）
+   │     │     └─ DO：AppStore（enableSql）+ Hub（WebSocket Hibernation，供 /svc/events 内部桥接）
    │     └─ 守护/监控/审计：workerd_guard · app_monitor · app_audit
    └─ 容器 dagu-u-{uid}：opencode(4096)（agent 编辑端）+ 存量 serve_html（过渡）
 
-dagu 定时 DAG：app_sync_data（查上游写回）· app_monitor · workerd_guard · app_audit
+dagu 定时 DAG：app_sync_data（跑各 app 的 sync_merge.py 快照合并）· app_monitor · workerd_guard · app_audit
 ``
 
 ### 关键机制
 
 - **注册表驱动路由**：gateway 每请求读 users/<uid>/workspace/.apps/apps.json；发布/切版本/回滚 = 改 manifest，零 config 零重启（新 app/新版本首次出现才经 app_sync 重建 config + 热加载）；
 - **每 app/版本独立 isolate**：数据/代码/故障域隔离；SQLite 按版本独立目录；
-- **实时数据**：pp_sync_data 定时查 Doris/MySQL（容器内执行，宿主零驱动）→ 网关 refresh 路由 → App SQLite → WebSocket（DO Hibernation）推送前端无感刷新；
-- **安全**：Cookie（uid 级）+ 可选 per-app token（X-App-Token / WS ?token=，由 .apps-secret 确定性派生）；
+- **实时数据**：app_sync_data 每 5 分钟在容器内跑各 app 的 `sync_merge.py`（查 Doris/MySQL → 按 key 合并进 spec，旧数据保留、不新增行）→ POST `/svc/spec` → SSE（内部 WebSocket 桥接 Hub DO Hibernation）推送前端无感刷新；
+- **安全**：Cookie（uid 级）鉴权 + app 归属校验；不启用 per-app token（M3 曾引入，本轮按需求移除）；
 - **生命周期**：pp_sync（发布）、pp_delete（删除+归档+重建）、版本文件不覆盖；
 - **可靠性与可观测**：config 先 workerd compile 校验再覆盖；workerd_guard 自动拉起；pp_monitor 巡检配额/同步；pp_audit 汇总操作审计。
 
 ### 数据流
 
-- 生成期：需求理解 → db_query 查库 → 种子数据 → 写 .apps/ → pp_sync 发布；
-- 运行期：前端 /api/data 轮询 + /api/ws 推送；pp_sync_data 每 5 分钟同步上游；
+- 生成期：需求理解 → db_query 查库 → 构造 spec → 写 .apps/（www + v1.js + sync_merge.py + apps.json 登记 sync）→ app_sync 发布 → POST /svc/spec 入库；
+- 运行期：前端 /svc/spec 拉取渲染 + 轮询兜底 + /svc/events（SSE）实时推送；pp_sync_data 每 5 分钟跑各 app 的 sync_merge.py（快照合并，旧数据保留）写回 /svc/spec；
 - 版本：direct 测试 → manifest 切默认版本（零重启，在途 v1 自然完成）。
 
 ### 边界与约束（实现要点）

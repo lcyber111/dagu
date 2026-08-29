@@ -232,7 +232,7 @@ if os.path.isfile(path):
 config.update(
     {
         "baseUrl": base_url,
-        "appProxyBaseUrl": base_url.rstrip("/") + "/app-proxy",
+        "appProxyBaseUrl": base_url.rstrip("/") + "/app",
         "uid": uid,
         "description": "Dashboard access through the central OCC gateway",
     }
@@ -263,4 +263,4 @@ docker run -d \
 
 wait_ready
 trap - EXIT
-echo "create_user: done uid=$UID_VAL url=$GATEWAY_PUBLIC_BASE_URL/u/$UID_VAL"
+echo "create_user: done uid=$UID_VAL url=$GATEWAY_PUBLIC_BASE_URL/portal/u/$UID_VAL"

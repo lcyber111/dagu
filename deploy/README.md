@@ -11,7 +11,7 @@
 | 模板清单 | `templates.yaml` | `template_id` → 镜像/workspace/opencode 配置/默认资源 |
 | 模板数据 | `deploy/templates/tpl-dev-v2.tar.gz` | workspace + opencode.json |
 | 网关配置 | `gateway/Caddyfile` + `gateway/docker-compose.yml` | Caddy 网关（9088）：数据面代理、活动日志、启动页 |
-| 控制面逻辑 | `workerd/config.capnp.tpl` + `workerd/worker.js` | workerd（9090）：`/u/{uid}`、health、webhook 鉴权转发、restart |
+| 控制面逻辑 | `workerd/config.capnp.tpl` + `workerd/worker.js` | workerd（9090）：`/portal/u/{uid}` 门户入口、`/portal` 门户页、`/app/v1/*` 轻应用控制面、health、webhook 鉴权转发、restart |
 | 活动日志 | 安装后生成于 `logs/access.log` | Caddy JSON 访问日志（含 `uid` 字段），供 `reap_idle` 判定活动 |
 | 运行脚本 | `scripts/create_user.sh`、`scripts/delete_user.sh`、`scripts/start_user.sh`、`scripts/reap_idle.sh` | 工作流调用的容器操作 |
 | dagu 配置 | `deploy/base.yaml`、`deploy/base.dag.yaml` | 扁平 schema；DAG 基础配置与 CLI 配置分离 |
@@ -55,14 +55,14 @@
 - `POST /webhooks/user_create`：Bearer token；body `{"uid","username","resources":{"cpu_limit","memory_limit","template_id"}}`
 - `POST /webhooks/user_delete`：Bearer token；body `{"uid","force","archive_data"}`
 - `GET /health`：`{"status":"healthy","timestamp":...}`
-- 用户访问入口：`http://<IP>:9088/u/{uid}`（写 `ws_user` Cookie 后路由到用户容器 4096）
+- 用户访问入口：`http://<IP>:9088/portal/u/{uid}`（写 `ws_user` Cookie 后 302 到 `/portal` 门户）
 - `POST /api/v1/restart/{uid}`（内部接口）：启动页 JS 触发容器恢复，workerd 注入 token 后转发 `user_start` webhook
 
 ## 架构：Caddy 数据面 + workerd 控制面
 
 ```
-浏览器 → Caddy(:9088) ── 数据面（用户容器流量、WS/SSE、启动页、401 兜底、活动日志）
-                     └── 控制面（/u/*、/api/v1/*）→ workerd(:9090) → dagu
+浏览器 → Caddy(:9088) ── 数据面（用户容器流量、WS/SSE、启动页、404 兜底、活动日志）
+                     └── 控制面（/portal/*、/api/v1/*、/app/v1/*）→ workerd(:9090) → dagu
 ```
 
 - Caddy 只做转发和代理，业务判断逻辑（写 Cookie、302、webhook 鉴权、token 注入）全部在
@@ -110,27 +110,11 @@ ADMIN_TOKEN=$(curl -s -X POST http://172.17.0.1:18080/api/v1/auth/login \
 
 ### 2) 注册新用户（触发 user_create 工作流）
 
-
-
-
-
-192.168.0.3
-
-106.63.8.234
-
-http://106.63.8.234:9088/u/usr_test03
-
-http://106.63.8.234:9088/u/usr_test01
-
-
-
-
-
 ```bash
-CREATE_TOKEN=$(cat /data1/lxz/dagu-run/.webhook-tokens/user_create.token)
+CREATE_TOKEN=$(cat /home/li/dagu-run/.webhook-tokens/user_create.token)
 
 curl -s -w '\nHTTP:%{http_code}\n' -X POST \
-  http://192.168.0.3:9088/api/v1/webhooks/user_create \
+  http://192.168.252.131:9088/api/v1/webhooks/user_create \
   -H "Authorization: Bearer $CREATE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -140,9 +124,6 @@ curl -s -w '\nHTTP:%{http_code}\n' -X POST \
       "cpu_limit": "2",
       "memory_limit": "4Gi",
       "template_id": "tpl-dev-v2"
-    },
-    "extra_config": {
-      "enable_gpu": false
     }
   }'
 ```
@@ -172,20 +153,20 @@ done
 
 ### 3) 访问已创建的用户容器（OpenCode 工作区）
 
-浏览器方式（最直观）：打开 `http://106.63.8.234:9088/u/usr_test03`，网关写入 `ws_user` Cookie 并跳到工作区页面。
+浏览器方式（最直观）：打开 `http://192.168.252.131:9088/portal/u/usr_test03`，网关写入 `ws_user` Cookie 并跳到门户页面。
 
 curl 方式：
 
 ```bash
-# 第一步：访问 /u/{uid}，让网关写入 Cookie
+# 第一步：访问 /portal/u/{uid}，让网关写入 Cookie
 curl -s -c /tmp/occ-cookie -o /dev/null -w 'entry HTTP:%{http_code}\n' \
-  http://192.168.252.131:9088/u/usr_test01
+  http://192.168.252.131:9088/portal/u/usr_test01
 
 # 第二步：带上 Cookie 访问工作区根路径，预期 200（代理到 dagu-u-usr_test01:4096）
 curl -s -b /tmp/occ-cookie -o /dev/null -w 'page HTTP:%{http_code}\n' \
   --max-time 15 http://192.168.252.131:9088/
 
-# 反例：不带 Cookie 访问，预期 401
+# 反例：不带 Cookie 访问，预期 404（白名单之外统一错误兜底）
 curl -s -o /dev/null -w 'no-cookie HTTP:%{http_code}\n' \
   http://192.168.252.131:9088/
 ```
@@ -240,7 +221,7 @@ curl -s -X POST \
 
 "活动" = 带 `ws_user` Cookie 且被代理到用户容器的任何请求（页面、静态资源、WebSocket/SSE 都算）。
 
-- `/u/{uid}` 入口不算活动：它只写 Cookie 后 302 跳转，不接触容器。
+- `/portal/u/{uid}` 入口不算活动：它只写 Cookie 后 302 跳转，不接触容器。
 - 最后活动时间 = 最后一次代理请求的时间；容器被 stop 后再次访问，恢复成功后才重新计时。
 - 新容器初始值 = 容器创建时间（`docker inspect` 的 CreatedAt），即创建后至少给足 6 小时宽限期；创建后一直没人访问的容器，满 6 小时也会被回收。
 - 启动页自愈：页面每 5 秒自动刷新，恢复请求每 30 秒最多触发一次，失败会自动重试（`user_start` 幂等），不会永久卡在"正在启动"页。
@@ -260,7 +241,7 @@ curl -s -X POST \
 | 10:20 | 用户关闭页面，流量停止 |
 | 10:21~16:19 | `reap_idle` 每分钟检查一次，空闲 < 6 小时，不动 |
 | 16:20 | `reap_idle`：空闲 = 6 小时 → `docker stop -t 30`，内存释放 |
-| 16:30 | 用户点 `/u/{uid}`（不算活动）→ 302 → Caddy 代理失败（502）→ 返回启动页 → 页面 JS 调 `/api/v1/restart/{uid}` |
+| 16:30 | 用户点 `/portal/u/{uid}`（不算活动）→ 302 → Caddy 代理失败（502）→ 返回启动页 → 页面 JS 调 `/api/v1/restart/{uid}` |
 | 16:30~16:31 | workerd 注入 token 转发 `user_start` webhook → `docker start` + 等 4096 就绪 |
 | 16:31 | 页面自动刷新进入工作区，重新开始记录活动 |
 
@@ -299,7 +280,7 @@ curl -s -b /tmp/occ-cookie -o /dev/null -w 'page HTTP:%{http_code}\n' --max-time
 ### 已知边界
 
 - 标签页开着但人不在：轮询/心跳会持续刷新计时，容器不会被回收。
-- `/api/v1/restart/{uid}` 与 `/u/{uid}` 一样无独立鉴权（恢复 token 由 Caddy 注入，不暴露给浏览器）；攻击者最多让已存在的容器重启，容器有资源限制。
+- `/api/v1/restart/{uid}` 与 `/portal/u/{uid}` 一样无独立鉴权（恢复 token 由 Caddy 注入，不暴露给浏览器）；攻击者最多让已存在的容器重启，容器有资源限制。
 - `reap_idle` 每分钟产生一条运行记录（约 1440 条/天），可在 dagu UI 过滤；介意可调大 `REAP_CRON` 间隔。
 - 容器不存在/创建中/删除中：启动页统一文案并持续刷新，`user_start` 失败不影响现有 create/delete 流程。
 - 活动日志由 Caddy 写入 `logs/access.log`（轮转保留 3 份 × 10MiB）；`docker compose logs` 不再包含访问日志，只含 Caddy 运行日志。
@@ -307,7 +288,7 @@ curl -s -b /tmp/occ-cookie -o /dev/null -w 'page HTTP:%{http_code}\n' --max-time
 ## 已知限制（与接口文档的偏差）
 
 - webhook 响应体为 dagu 原生 `{dagRunId, dagName}`，不是文档示例的 `{taskId, message, status}`（workerd 原样透传，未引入翻译层）。
-- webhook 请求体原样透传，不在 HTTP 层校验 uid/字段（校验发生在工作流内部并失败）；`/u/{uid}` 入口的非法 uid 由 workerd 返回 **400**。
+- webhook 请求体原样透传，不在 HTTP 层校验 uid/字段（校验发生在工作流内部并失败）；`/portal/u/{uid}` 入口的非法 uid 由 workerd 返回 **400**。
 - 未知 webhook 路径由 workerd 返回 **404**，与文档一致。
 - `/api/v1/health` 的 `timestamp` 为 Caddy `{time.now}` 输出，非 ISO8601。
 
@@ -326,7 +307,7 @@ curl -s -b /tmp/occ-cookie -o /dev/null -w 'page HTTP:%{http_code}\n' --max-time
 
 ``
 users/<uid>/workspace/.apps/
-  apps.json                     # 注册表/事实源：appId → port/版本/默认版本/token/sync
+  apps.json                     # 注册表/事实源：appId → port/版本/默认版本/sync
   <appId>/
     v1.js / v2.js ...           # App Worker（agent 编写，版本文件不覆盖）
     www/                        # 页面资产（disk 绑定，改文件即时生效）
@@ -338,22 +319,28 @@ users/<uid>/workspace/.apps/
 ### Agent / 用户操作流程
 
 1. 写 app：在 .apps/<appId>/ 放 1.js（脚手架见 	emplates/app-scaffold/）与 www/；
-2. 登记：pps.json 加 app（port、defaultVersion、可选 	oken: true、sync: {db, sql}）；
+2. 登记：apps.json 加 app（port、defaultVersion、**sync: {"script": "sync_merge.py"}**）；
+   `sync_merge.py` 位于 `.apps/<appId>/`，由 Agent 生成时复制 `scripts/sync_merge.py.tpl`
+   定制（查询 SQL、合并 key、联动图表），**每个轻应用必备定时刷新**，缺失视为交付不完整；
 3. 发布（一条命令，无需 token）：
-   curl -X POST http://IP:9088/api/v1/apps/sync -H "Content-Type: application/json" -d '{"payload":{"uid":"<uid>"}}'
-4. 验证：http://IP:9088/app-proxy/<port>/api/health（带会话 Cookie；开启 token 需 X-App-Token）；
-5. 版本：direct 测试 /app-proxy/<port>/...?version=v2，通过后改 pps.json 的 defaultVersion（零重启）；
-6. 删除：/apps 页"删除"按钮（或 DELETE /api/v1/apps/<appId>）→ 摘除 + 归档 rchive/apps/ + 重建配置。
+   curl -X POST http://IP:9088/app/v1/sync -H "Content-Type: application/json" -d '{"payload":{"uid":"<uid>"}}'
+4. 验证：http://IP:9088/app/<port>/svc/health（带会话 Cookie）；
+5. 版本：direct 测试 /app/<port>/...?version=v2，通过后改 apps.json 的 defaultVersion（零重启）；
+6. 删除：/portal 门户"删除"按钮（或 POST /app/v1/delete）→ 摘除 + 归档 archive/apps/ + 重建配置。
+7. 修改：统一走 `POST /app/v1/apply/spec`（body `{"spec": ...}`，平台按 `.selected` 强制目标
+   → 校验 → 写 SQLite + SSE 广播，页面自动重绘）。改 spec 即生效，无需重建 HTML；
+   门户卡片标题从 spec 读取（单一来源）。`apply/www` / `apply/meta` / `/app/v1/refresh` 已删除。
 
 ### 运维
 
 - 手动重建配置：ash scripts/app_sync.sh（env：DAGU_ROOT/WORKERD_PORT/WORKERD_BIN/DAGU_API）；
-- 定时同步：dagu DAG pp_sync_data（默认每 5 分钟，按各 app 的 sync 配置查上游写入）；
+- 定时同步：dagu DAG `app_sync_data`（默认每 5 分钟，按各 app 的 `sync.script` 执行
+  合并脚本：取 spec → 查上游 → 按 key 合并（旧数据保留、不新增行）→ 写 `sync_at` →
+  POST `/svc/spec` → SSE 广播，页面无刷新重绘）；
 - 监控：pp_monitor（每 10 分钟，配额/同步陈旧告警到 dagu 运行日志）；
 - 守护：workerd_guard（每 1 分钟，进程/9090 未监听自动拉起）；
 - 审计：pp_audit（每 5 分钟，Caddy 日志增量提取发布/删除/刷新 → logs/app-audit.log）；
 - 配额：每 uid ≤ 20 app、单 app SQLite ≤ 100MB，超限发布失败；
-- 平台 secret：$DAGU_ROOT/.apps-secret（per-app token 派生用，勿泄露/删除）。
 
 ### 配置项（env，均有默认）
 
@@ -368,12 +355,11 @@ AUDIT_CRON="*/5 * * * *"    # 审计汇总
 
 - workerd 重启前确认旧进程已退出（DO 存储锁，否则新实例启动阻塞）；
 - --watch 只监听 config 文件：改 worker.js 必须走 pp_sync 发布；
-- 开启 	oken: true 后，定时同步由 app_sync_data 自动派生并透传，无需手工带 token；
-- 大屏页面轮询兜底 10s，WebSocket（/api/ws）实时推送；跨请求广播依赖 DO Hibernation。
-### 生成物门户（/workspace）
+- 大屏页面运行时拉取 /svc/spec 渲染、轮询兜底 30s、/svc/events（SSE）实时推送；跨请求广播依赖 Hub DO Hibernation。
+### 生成物门户（/portal）
 
-- 入口：http://IP:9088/workspace（带会话 Cookie）；左侧固定 OpenCode 对话（可折叠），右侧生成物列表 + 切换展示（同一时间显示一个）。
-- 数据源：GET /api/v1/apps（uid 鉴权；返回 title/description/createdAt/type/版本/状态[探活]，不含 token）。
+- 入口：http://IP:9088/portal（带会话 Cookie）；左侧固定 OpenCode 对话（可折叠），右侧生成物列表 + 切换展示（同一时间显示一个）。
+- 数据源：GET /app/v1/list（uid 鉴权；返回 title/description/createdAt/type/版本/状态[探活]）。
 - 交互：点卡片切换展示（旧 iframe 销毁）；新标签打开、删除（归档）、刷新；列表 5s 轮询，空闲时自动选中最新生成物。
 - 静态资产：$DAGU_ROOT/portal/（index.html/app.js/app.css），由网关经 disk 绑定托管，改文件即时生效。
 - 生成物元数据（agent 生成时写入 pps.json）：	itle、description、createdAt、	ype（默认 dashboard）；门户自动补版本/端口/状态/最近同步时间。- 交互增强：左右面板**分隔条可拖拽**调比例（15%–85%，Pointer 捕获 + 全屏遮罩防 iframe 抢事件，记忆到 localStorage）；折叠对话为 CSS 隐藏保留会话。

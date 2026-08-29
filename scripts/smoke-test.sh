@@ -66,16 +66,16 @@ expect yes "$READY" "container ready"
 
 echo "== flow: tenant entry + cookie access =="
 rm -f "$COOKIE_JAR"
-curl -s -c "$COOKIE_JAR" -o /dev/null "$GW_BASE/u/$UID_TEST"
+curl -s -c "$COOKIE_JAR" -o /dev/null "$GW_BASE/portal/u/$UID_TEST"
 CODE=$(curl -s -b "$COOKIE_JAR" -o /dev/null -w '%{http_code}' --max-time 15 "$GW_BASE/")
 expect 200 "$CODE" "workspace page 200"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "$GW_BASE/")
-expect 401 "$CODE" "no-cookie 401"
+expect 404 "$CODE" "no-cookie 404"
 
 echo "== flow: control plane went through workerd =="
 WORKERD_LOG="${WORKERD_LOG:-$ROOT/logs/workerd-access.log}"
 [ -f "$WORKERD_LOG" ] || fail "workerd log missing: $WORKERD_LOG"
-grep -q "302 /u/$UID_TEST" "$WORKERD_LOG" || fail "workerd did not handle /u/$UID_TEST"
+grep -q "302 /portal/u/$UID_TEST" "$WORKERD_LOG" || fail "workerd did not handle /portal/u/$UID_TEST"
 grep -q "webhook user_create" "$WORKERD_LOG" || fail "workerd did not forward user_create"
 echo "  ok   control plane requests handled by workerd"
 

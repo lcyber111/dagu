@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dagu-gate app_audit —— 从 Caddy 访问日志增量提取 App Worker 生命周期操作，汇总审计日志
-# 记录：发布(apps/sync)、删除(apps/<id> DELETE)、数据刷新(apps/<id>/refresh)、
+# 记录：发布(apps/sync)、修改大屏(apps/apply/spec)、选中(apps/select)、删除(apps/delete)、
 #       直接 webhook(app_sync/app_delete)。
 # 增量标记：logs/.app-audit.offset（处理到的字节偏移）。
 set -euo pipefail
@@ -36,8 +36,7 @@ import re
 import sys
 
 OPS = re.compile(
-    r"^/api/v1/apps/(sync|([A-Za-z0-9_-]+)/refresh)$|^/api/v1/apps/[A-Za-z0-9_-]+$"
-    r"|^/api/v1/webhooks/(app_sync|app_delete)$"
+    r"^/app/v1/(list|sync|select|delete|apply/spec)$"
 )
 
 lines = []

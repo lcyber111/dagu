@@ -19,7 +19,7 @@
   <main class="right">
     <section class="gallery">
       <div class="gallery-head">
-        <h2>智能体生成物（态势大屏 · 后端 + 前端 + SQLite）</h2>
+        <h2>智能体生成物</h2>
         <button id="refreshList" title="刷新列表">刷新</button>
       </div>
       <div class="cards" id="cards"></div>
@@ -38,10 +38,12 @@
         <span class="close" id="pClose">关闭</span>
       </div>
       <iframe id="frame" title="生成物展示"></iframe>
+      <div id="frameLoading" class="frame-loading" style="display:none">正在加载…</div>
     </section>
 </main>
 </div>
 <div id="dragShield" style="display:none"></div>
+<div id="toast" class="toast"></div>
 <script src="/portal/app.js"></script>
 </body>
 </html>

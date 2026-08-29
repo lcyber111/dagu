@@ -11,7 +11,7 @@
   写死进 HTML 的 `window.DASHBOARD_SPEC`，`serve_html.py` 只做静态托管，页面运行期不连任何后端。
 - 数据时效 = 生成时刻；agent 改页面只能重新构建整个 HTML，无法运行时实时变化。
 - 现有网关链路：Caddy(:9088) 数据面 → 用户容器（opencode:4096 + serve_html 子应用）；
-  控制面 `/u/*`、`/api/v1/*` → 宿主机 workerd(:9090)。
+  控制面 `/portal/*`、`/api/v1/*`、`/app/v1/*` → 宿主机 workerd(:9090)。
 
 ### 新需求目标
 
@@ -55,7 +55,7 @@
 
 1. 大屏数据"实时"验收目标：**分钟级**（上游库更新后 1~5 分钟内大屏可见）。
 2. 每个大屏 = 一个 **App Worker（深模块，agent 编写完整 ES 模块 worker.js）**：
-   对外小接口（页面 + `/api/data` CRUD + 可选推送）；内部实现路由/业务/SQLite/前端渲染；
+   对外小接口（页面 + `/svc/data` CRUD + 可选推送）；内部实现路由/业务/SQLite/前端渲染；
    一个 app = 一个大屏（多视图是 app 内部数据接口）。
 3. 数据模型：agent 在 worker.js 中定义（标准脚手架模板 + DO SQLite），不做声明式限制。
 
@@ -89,8 +89,8 @@
 
 ### 路由、注册与版本（C+ 核心）
 
-14. 路由：Caddy `/app-proxy/*` → workerd:9090，控制面 worker 按端口/appId 分发
-    （service bindings）；`/u/*`、`/api/v1/*` 原逻辑不动。
+14. 路由：Caddy `/app/<port>/*` → workerd:9090，控制面 worker 按端口/appId 分发
+    （service bindings）；`/portal/*`、`/api/v1/*`、`/app/v1/*` 原逻辑不动。
 15. **平台注册表**：`users/<uid>/workspace/.apps/apps.json` 为唯一事实源
     （appId → port / 版本列表 / 默认版本 / worker 文件 / www 目录 / sqlite / 状态）。
     控制面 router **每请求读取（短缓存）**，发布/切版本/回滚 = 改 manifest，零 config。
@@ -102,7 +102,7 @@
 17. **版本化**：版本文件不覆盖（`v1.js`、`v2.js` 并存）；每个版本一个独立 service /
     isolate；manifest 的"默认版本"决定新请求路由；切换 = 改 manifest，零重启，
     在途 v1 请求在 v1 service 内自然完成；**direct 测试** = 路由带显式版本参数
-    （`/app-proxy/<port>?version=v2`）先跑单测，通过后再切默认版本。
+    （`/app/<port>?version=v2`）先跑单测，通过后再切默认版本。
 18. App 归属 **uid 级**：`users/<uid>/workspace/.apps/`，跨会话可见。
 19. 存量大屏**不处理、不兼容**；serve_html 随自然淘汰。
 20. App 删除：**归档**（`archive/apps/<uid>-<appId>-<ts>.tar.gz`）；`user_delete` 归档整个
@@ -119,10 +119,10 @@
 ## 架构图
 
 ```
-浏览器（opencode Web / 列表页 / 新标签页）
-   │  /app-proxy/<port>/...（ws_user Cookie）
+浏览器（opencode Web / 门户 / 新标签页）
+   │  /app/<port>/...（ws_user Cookie）
 Caddy :9088 ───────────────────────────────── 数据面路由
-   ├─ /u/*、/api/v1/*、/app-proxy/* → workerd :9090（单进程）
+   ├─ /portal/*、/api/v1/*、/app/v1/*、/app/<port>/* → workerd :9090（单进程）
    │     ├─ gatewayWorker：控制面 + router（每请求读 apps.json 短缓存）
    │     ├─ app-<appId>-v1 / v2 …（每版本独立 service/isolate）
    │     │     ├─ worker.js（agent 编写，完整 ES 模块）
@@ -142,7 +142,7 @@ M2：dagu 定时 DAG app_sync_data → db_query 查 Doris/MySQL → 写 App SQLi
 
 | 组件 | 职责 | 变化 |
 | --- | --- | --- |
-| Caddy（容器，:9088） | 数据面路由、Cookie 校验、启动页、活动日志；`/app-proxy/*` 改指宿主机 workerd | 小改 |
+| Caddy（容器，:9088） | 数据面路由、Cookie 校验、启动页、活动日志；`/app/<port>/*` 改指宿主机 workerd | 小改 |
 | 控制面 workerd（:9090） | 既有 `/u`、`/api/v1`、webhook、restart；新增 router（读 apps.json 分发） | 扩展 |
 | App Worker（每 app/版本一个 service） | 页面托管（disk）+ 数据 CRUD + SQLite + 业务规则（agent 代码） | 新增 |
 | dagu `app_sync` DAG | 扫描 `apps.json` → 校验 → 生成/更新 config.capnp | 新增 |
@@ -152,11 +152,10 @@ M2：dagu 定时 DAG app_sync_data → db_query 查 Doris/MySQL → 写 App SQLi
 ## App Worker 接口约定
 
 - `GET /` → 大屏页面（HTML，复用 lib/dashboard）
-- `GET /api/health` → 就绪探针
-- `GET /api/data?view=<viewId>` → 数据（JSON）
-- `POST/PUT/DELETE /api/data/<collection>/<id>` → 增删改（写 SQLite）
-- `POST /api/refresh` → 手动触发上游同步（M1）
-- `GET /api/events` → SSE/WebSocket 推送（可选，M2）
+- `GET /svc/health` → 就绪探针
+- `GET/POST /svc/spec` → 大屏 spec（GET 读取 / POST 写入入库；**快照模式唯一数据源**，
+  数据库仅一行 `id="spec"`；2026-08-28 起 /svc/data CRUD 与 /svc/refresh 已删除）
+- `GET /svc/events` → SSE 实时推送（前端 EventSource；内部 WebSocket 桥接 Hub DO Hibernation）
 
 脚手架模板（worker.js 骨架 + DO/SQLite 用法 + 页面示例）由模板仓库提供，agent 在其上实现业务。
 
@@ -179,7 +178,7 @@ disk bindings + gateway 的 routes 绑定），不手工维护；端口由 manif
 
 - 生成期：需求理解 → `db_query.py` 查库 → 种子数据写入 App SQLite → 生成 worker.js/www →
   `app_sync` 发布 → 热加载生效。
-- 运行期（M1）：前端轮询 `fetch(/api/data)` → App Worker 读 SQLite → 局部更新；
+- 运行期（M1）：前端轮询 `fetch(/svc/data)` → App Worker 读 SQLite → 局部更新；
   agent 改 worker.js → `app_sync`（新版本）或 manifest 切换（既有版本）→ 页面刷新。
 - 运行期（M2）：dagu `app_sync_data` 定时同步上游 → App SQLite；SSE 推送 → 无感热更。
 
@@ -196,11 +195,11 @@ disk bindings + gateway 的 routes 绑定），不手工维护；端口由 manif
 
 - **M0 PoC**：宿主 workerd 单进程跑控制面 + 示例 app（静态页 / SQLite CRUD，含 v1/v2）；
   验证：① DO sqlite 落盘持久化（进程重启不丢）；② `app_sync` 生成 config + FileWatcher 热加载；
-  ③ 版本切换 / direct 测试走 manifest 零重启，在途 v1 完成；④ Caddy `/app-proxy/*` 转发与
+  ③ 版本切换 / direct 测试走 manifest 零重启，在途 v1 完成；④ Caddy `/app/<port>/*` 转发与
   Cookie 鉴权；⑤ **发布新版本 reload 对在途请求的影响**（<2s 且可重试 → 单进程定稿）；
   ⑥ opencode 内嵌面板入口摸底（M2 UX）；⑦ unsafeEval 壳对照组（验证后归档）。
 - **M1 MVP**：大屏生成流程产出 App Worker（脚手架 v1 模板 + app_sync 闭环）；前端从
-  `/api/data` 拉数据替代快照；种子数据灌入 + 手动 refresh；大屏列表页 + 新标签页；
+  `/svc/data` 拉数据替代快照；种子数据灌入 + 手动 refresh；大屏列表页 + 新标签页；
   配额校验；删除归档。
 - **M2 实时化**：dagu `app_sync_data` 定时同步（分钟级）；SSE 推送 + 无感热更；
   opencode 内嵌 iframe 面板；多 app 管理。
@@ -217,7 +216,7 @@ disk bindings + gateway 的 routes 绑定），不手工维护；端口由 manif
 - manifest 版本切换：`defaultVersion` v1↔v2 仅改 `apps.json`，零 config、零 reload，立即生效；
 - app_sync 发布：重新生成 config.capnp（先 `workerd compile` 校验）→ FileWatcher 自动热加载；
 - reload 影响：发布 reload 期间 40/40 请求全部 200，未见断连；
-- Caddy 路由：`/app-proxy/2xxxx` → 宿主机 workerd:19090（带 ws_user Cookie 正常访问；无 Cookie 401）。
+- Caddy 路由：`/app/2xxxx` → 宿主机 workerd:9090（带 ws_user Cookie 正常访问；无 Cookie / 未知路径统一 404）。
 
 关键实测发现（写入设计约束）：
 
@@ -238,11 +237,11 @@ disk bindings + gateway 的 routes 绑定），不手工维护；端口由 manif
 
 已完成并实测通过：
 
-- **发布闭环（agent 一条命令）**：`POST /api/v1/apps/sync`（带 ws_user Cookie，网关注入
+- **发布闭环（agent 一条命令）**：`POST /app/v1/sync`（带 ws_user Cookie，网关注入
   `app_sync` token 转发 dagu，agent 无需持密钥）→ dagu `app_sync` DAG →
   `scripts/app_sync.sh` 扫描注册表 → 生成 config.capnp（先 `workerd compile` 校验）→
   FileWatcher 热加载。经 Caddy 端到端验证（config mtime 更新、dagRunId 返回、app 持续可用）。
-- **大屏列表页**：`/apps`（Caddy 路由 → 网关），展示当前 uid 所有 app 与版本链接。
+- **大屏列表页**：`/portal` 门户页（Caddy 路由 → 网关），展示当前 uid 所有 app 与版本链接（旧 `/apps` 页已随 2026-08-27 路由重构移除）。
 - **配额校验**：app_sync 内置 每 uid ≤ 20 app、单 app SQLite ≤ 100MB，超限报错退出；
   支持 `WEBHOOK_PAYLOAD.uid` 范围同步。
 - **reload 压力测试**：连续 5 次发布 reload 期间，60/60 请求全部 200，
@@ -262,20 +261,25 @@ M1 剩余（下一迭代）：
 
 - 模板 SOP（agents_gen）固化"生成大屏 app"流程（脚手架引用 dagu-gate/templates/app-scaffold）；
 - 大屏页面接入现有 lib/dashboard 渲染资产（当前脚手架为简化页面）；
-- 种子数据灌入演示（脚手架已提供 `/api/refresh`）；
+- 种子数据灌入演示（脚手架已提供 `/svc/refresh`）；
 - M2：dagu `app_sync_data` 定时同步、SSE 推送、opencode 内嵌面板。
 
 ## M2 验证结果（2026-08-24，VM .131）
 
 - **分钟级定时同步**：`app_sync_data` DAG（默认 `*/5 * * * *`）按各 app 的
   `sync: {db, sql}` 配置，在用户容器内跑 `db_query.py` 查上游（Doris 实测 265 行），
-  经网关 `POST /api/v1/apps/<appId>/refresh` 写回 App SQLite（主键去重后 12 艘航母），
+  经网关 `POST /app/v1/refresh` 写回 App SQLite（主键去重后 12 艘航母），
   页面轮询刷新可见。零新增组件、宿主无需 DB 驱动。
-- **实时推送**：页面经 WebSocket `/api/ws` 连接 **DO Hub（Hibernation）**；
-  PUT/删除/refresh 后 `Hub.broadcast` 推送，前端收到即刷新（无感热更）。
-  实测：客户端收到 `{"type":"data","reason":"put","id":...}` 推送帧。
-- 经验：workerd 不支持跨请求向 ReadableStream enqueue（SSE 方案不成立）；
-  WebSocket 跨请求广播必须用 DO Hibernation（`acceptWebSocket` / `getWebSockets`）。
+- **实时推送（SSE，2026-08-28 定案）**：页面经 `EventSource("/app/<port>/svc/events")`
+  订阅；App Worker 的 `/svc/events` 处理器持 SSE 流，内部用 WebSocketPair +
+  `Hub DO.fetch`（Upgrade）连到 **Hub DO（Hibernation）**，把 Hub 广播消息转成
+  SSE 事件推给浏览器。PUT/删除/refresh/spec 更新后 `Hub.broadcast` 推送，
+  前端收到 `data`/`spec` 事件后重拉 `/svc/spec` 并 `DashboardRender()` 无刷新重渲染。
+- 经验修正：**DO 直出 SSE 不成立**（HTTP 流会把 DO 实例钉住，无法 Hibernation；
+  且 workerd 跨请求向 ReadableStream enqueue 受限）；**SSE + 内部 WebSocket 桥成立**：
+  SSE 流放在 App Worker（非 DO），DO 侧只有 hibernatable 的 WebSocket，广播照旧。
+  实测（VM .131，headless Chrome）：POST /svc/spec 改标题 → 浏览器 EventSource 收到
+  `event: data` → 页面标题无刷新更新（CDP 断言 PASS）。
 - **app_sync_data 接入**：`deploy/dags/app_sync_data.yaml.tpl`（`{{SYNC_CRON}}` 渲染，
   默认 5 分钟）；install.sh 同步支持。
 
@@ -291,7 +295,7 @@ M2 剩余：
 preview 为主题/图片预览、链接一律新标签页打开）。结论：M2 UX 维持"列表页 + 新标签页"；
 "内嵌 iframe 面板"列为 M3 待定项，需定制 opencode UI（fork/插件）才能实现。
 
-**多 app 管理（删除）**：`/apps` 页新增"删除"按钮 → `DELETE /api/v1/apps/<appId>`
+**多 app 管理（删除）**：`/portal` 门户"删除"按钮 → `POST /app/v1/delete`
 （Cookie 鉴权）→ 网关注入 `app_delete` token 转发 dagu `app_delete` DAG →
 `scripts/app_delete.sh` 从注册表摘除 + 归档 `archive/apps/<uid>-<appId>-<ts>` +
 重建 workerd 配置。实测：发布临时 app → 删除 → 列表移除、旧端口 404、归档落盘、
@@ -305,6 +309,8 @@ preview 为主题/图片预览、链接一律新标签页打开）。结论：M2
   `/api/data`、`/api/refresh`、CRUD、`/api/ws` 均要求 `X-App-Token`（WS 走 `?token=`），
   页面自动注入 `window.APP_TOKEN`；`app_sync_data` 自动派生 token 随 refresh 透传（网关透传头）。
   实测：无 token 401、带 token 全通、定时同步在 token 开启后仍正常、WS 推送正常。
+  （注：2026-08-27 路由重构时按需求**移除 per-app token**——删除 `.apps-secret`、
+  config 与 worker 不再校验 token，页面无需携带；本段保留作为历史验证记录。）
 - **监控巡检**：`app_status.sh` + `app_monitor` DAG（默认每 10 分钟）——app 数量/配额、
   SQLite 体积、最后同步时间（`app_sync_data` 写 `_meta.lastSync`），异常输出 WARN/ERROR。
 - **workerd 守护**：`workerd_guard.sh` + `workerd_guard` DAG（默认每 1 分钟）——进程不在或
@@ -314,14 +320,14 @@ preview 为主题/图片预览、链接一律新标签页打开）。结论：M2
   workerd console 记录关键操作。
 - **审计日志落地**：`app_audit.sh` + `app_audit` DAG（默认每 5 分钟）从 Caddy 访问日志增量提取 App 生命周期操作（发布/删除/refresh/webhook），汇总到 `logs/app-audit.log`（ts/uid/method/uri/status），偏移标记防重复。实测：首次全量 + 增量去重正常。
 
-## 生成物门户（/workspace，2026-08-24 定稿并实测）
+## 生成物门户（/portal，2026-08-24 定稿并实测；2026-08-27 路由重构后入口为 /portal）
 
 - **形态**：左侧固定 OpenCode 对话（可折叠，CSS 隐藏保留会话；分隔条可拖拽调比例 15%–85%，Pointer 捕获 + 全屏遮罩防 iframe 抢事件，比例记忆 localStorage）；右侧生成物画廊 + 切换展示区（同一时间一个，切换销毁旧 iframe）。
 - **生成物语义**：每个生成物 = 一个 App Worker（后端 CRUD + 前端 HTML + SQLite），manifest 元数据 title/description/createdAt/type（agent 声明），门户自动补版本/端口/状态（轻量探活）/最近同步时间。
-- **选中→修改闭环**：点卡片 → 网关 PUT /api/v1/apps/selected → dagu pp_select DAG 写 .apps/.selected；agent 改当前大屏前读标记 → 改 www/ 或新版本 → 发布（app_sync）→ _meta.lastPublish 更新 → 门户自动刷新预览。
+- **选中→修改闭环**：点卡片 → 网关 PUT /app/v1/select → dagu pp_select DAG 写 .apps/.selected；agent 改当前大屏前读标记 → 改 www/ 或新版本 → 发布（app_sync）→ _meta.lastPublish 更新 → 门户自动刷新预览。
 - **交互**：默认选中最近生成物（正在看的不打断）；空态引导；删除（归档，二次确认）；新标签打开；列表 5s 轮询。
-- **清单接口**：GET /api/v1/apps（uid 鉴权；含 title/desc/createdAt/type/版本/状态/lastPublish，不含 token）。
-- **门户实现**：静态页 $DAGU_ROOT/portal/（index.html/app.js/app.css），网关经 disk 绑定托管，改文件即时生效；/workspace、/portal/* 由 Caddy 指向 workerd:9090。
+- **清单接口**：GET /app/v1/list（uid 鉴权；含 title/desc/createdAt/type/版本/状态/lastPublish）。
+- **门户实现**：静态页 $DAGU_ROOT/portal/（index.html/app.js/app.css），网关经 disk 绑定托管，改文件即时生效；/portal、/portal/* 由 Caddy 指向 workerd:9090。
 - 无头 UI 逻辑测试 22/22；Windows↔VM 关键文件哈希一致。
 ## 风险与开放问题
 

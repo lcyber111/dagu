@@ -16,47 +16,25 @@
 
 	# =========================================================
 	# 控制面：全部转发给 workerd（172.17.0.1:9090），业务逻辑在
-	# workerd/worker.js 里实现（/u/{uid}、health、webhooks、restart）
+	# workerd/worker.js 里实现（/portal/u/{uid}、health、webhooks、restart）
 	# =========================================================
 	handle /api/v1/* {
 		reverse_proxy 172.17.0.1:9090
 	}
 
-	# =========================================================
-	# 租户入口 /u/{uid}：转发给 workerd 写 Cookie 并 302 到 /
-	# =========================================================
-	handle /apps {
-		reverse_proxy 172.17.0.1:9090
-	}
-
-	handle /apps/* {
-		reverse_proxy 172.17.0.1:9090
-	}
-
-	handle /u/* {
+	# 轻应用控制面（/app/v1/*）：转发 workerd，由 gateway 内部校验 Cookie
+	handle /app/v1/* {
 		reverse_proxy 172.17.0.1:9090
 	}
 
 	# =========================================================
-	# 规则 2：网关直接响应无凭据探针
+	# 门户面：/portal/u/{uid} 统一入口、/portal 门户页、/portal/* 静态资产
 	# =========================================================
-
-	handle /workspace {
-		reverse_proxy 172.17.0.1:9090
-	}
-	handle /workspace/* {
-		reverse_proxy 172.17.0.1:9090
-	}
 	handle /portal/* {
 		reverse_proxy 172.17.0.1:9090
 	}
-	handle /site.webmanifest {
-		header Content-Type "application/manifest+json"
-		respond `{"name":"OpenCode","short_name":"OpenCode","start_url":"/","display":"standalone","background_color":"#ffffff","theme_color":"#000000"}` 200
-	}
-
-	handle /favicon.ico {
-		respond 200
+	handle /portal {
+		reverse_proxy 172.17.0.1:9090
 	}
 
 	# =========================================================
@@ -65,9 +43,9 @@
 	@get_user header_regexp cookie_user Cookie (?:^|;\s*)ws_user=([a-zA-Z0-9_.-]+)
 	handle @get_user {
 
-		# 3a0. C+ PoC：/app-proxy/2xxxx -> 宿主机 workerd :19090（保留路径，由 gateway 按 manifest 分发）
-		@appproxy_poc path_regexp apphost ^/app-proxy/(2[0-9]{4})(/.*)$
-		handle @appproxy_poc {
+		# 2a. 轻应用数据面：/app/2xxxx[/...] -> 宿主机 workerd :9090（按 manifest 分发）
+		@apphost path_regexp apphost ^/app/(2[0-9]{4})(/.*)?$
+		handle @apphost {
 			reverse_proxy 172.17.0.1:9090 {
 				header_up X-Real-IP {http.request.remote.host}
 				header_up X-Forwarded-For {http.request.remote.host}
@@ -76,49 +54,7 @@
 			}
 		}
 
-		# 3a0r. C+ PoC 根路径：/app-proxy/2xxxx -> 宿主机 workerd :19090
-		@appproxy_poc_root path_regexp apphostroot ^/app-proxy/(2[0-9]{4})$
-		handle @appproxy_poc_root {
-			reverse_proxy 172.17.0.1:9090
-		}
-
-		# 3a. 子应用子路径: /app-proxy/<port>/... -> dagu-u-{UID}:<port>/...
-		@appproxy_sub path_regexp appsub ^/app-proxy/([0-9]+)(/.*)$
-		handle @appproxy_sub {
-			rewrite * {re.appsub.2}
-			reverse_proxy dagu-u-{re.cookie_user.1}:{re.appsub.1} {
-				header_up Host "localhost:{re.appsub.1}"
-				header_up Origin "http://localhost:{re.appsub.1}"
-				header_up X-Real-IP {http.request.remote.host}
-				header_up X-Forwarded-For {http.request.remote.host}
-				header_up X-Forwarded-Proto {http.request.scheme}
-
-				flush_interval -1
-				transport http {
-					dial_timeout 3s
-				}
-			}
-		}
-
-		# 3b. 子应用根路径: /app-proxy/<port> -> dagu-u-{UID}:<port>/
-		@appproxy_root path_regexp approot ^/app-proxy/([0-9]+)$
-		handle @appproxy_root {
-			rewrite * /
-			reverse_proxy dagu-u-{re.cookie_user.1}:{re.approot.1} {
-				header_up Host "localhost:{re.approot.1}"
-				header_up Origin "http://localhost:{re.approot.1}"
-				header_up X-Real-IP {http.request.remote.host}
-				header_up X-Forwarded-For {http.request.remote.host}
-				header_up X-Forwarded-Proto {http.request.scheme}
-
-				flush_interval -1
-				transport http {
-					dial_timeout 3s
-				}
-			}
-		}
-
-		# 3c. 主应用：OpenCode Web -> dagu-u-{UID}:4096
+		# 2b. 主应用：OpenCode Web -> dagu-u-{UID}:4096（SPA，全路径）
 		handle {
 			reverse_proxy dagu-u-{re.cookie_user.1}:4096 {
 				header_up Host "localhost:4096"
@@ -136,18 +72,17 @@
 	}
 
 	# =========================================================
-	# 规则 4：未带 Cookie 的普通页面请求 -> 拦截提示
+	# 统一错误兜底：白名单之外（未带 Cookie / 未知路径 / 旧路径）-> 404
 	# =========================================================
 	handle {
-		header Content-Type "text/html; charset=utf-8"
-		respond "错误：未检测到有效会话，请重新从门户链接 /u/{UID} 进入工作区！" 401
+		respond "not found" 404
 	}
 
 	# =========================================================
 	# 容器不可达（被空闲回收 / 未就绪）时显示启动页并触发恢复
 	# =========================================================
 	handle_errors {
-		@stopped expression `{err.status_code} == 502 && {http.request.cookie.ws_user} != "" && ({http.request.uri.path}.startsWith("/api/") == false) && ({http.request.uri.path}.startsWith("/app-proxy/") == false)`
+		@stopped expression `{err.status_code} == 502 && {http.request.cookie.ws_user} != "" && ({http.request.uri.path}.startsWith("/api/") == false) && ({http.request.uri.path}.startsWith("/app/") == false) && ({http.request.uri.path}.startsWith("/portal/") == false)`
 		handle @stopped {
 			header Content-Type "text/html; charset=utf-8"
 			respond `<!DOCTYPE html>
