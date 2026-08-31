@@ -33,17 +33,30 @@ if [ -z "$WORKERD_BIN" ] || [ ! -x "$WORKERD_BIN" ]; then
   exit 1
 fi
 
+# python3: system interpreter first, bundled portable runtime second
+PYTHON3="${PYTHON3:-}"
+if [ -z "$PYTHON3" ] && command -v python3 >/dev/null 2>&1; then
+  PYTHON3="$(command -v python3)"
+fi
+if [ -z "$PYTHON3" ] && [ -x "$DAGU_ROOT/python/bin/python3" ]; then
+  PYTHON3="$DAGU_ROOT/python/bin/python3"
+fi
+if [ -z "$PYTHON3" ]; then
+  echo "ERROR: python3 not found (install python3 or keep dist/python-linux-x86_64.tar.gz in the package)" >&2
+  exit 1
+fi
+
 echo "app_sync: DAGU_ROOT=$DAGU_ROOT WORKERD_PORT=$WORKERD_PORT WORKERD_BIND=$WORKERD_BIND"
 
 # 可选：仅同步指定用户（dagu webhook 透传 WEBHOOK_PAYLOAD={"payload":{"uid":...}}）
 SCOPE_UID=""
 if [ -n "${WEBHOOK_PAYLOAD:-}" ]; then
-  SCOPE_UID="$(python3 -c 'import json,sys
+  SCOPE_UID="$("$PYTHON3" -c 'import json,sys
 p=json.loads(sys.argv[1]); p=p.get("payload",p); print(p.get("uid",""))' "$WEBHOOK_PAYLOAD")"
   echo "app_sync: scope uid=$SCOPE_UID"
 fi
 
-python3 - "$DAGU_ROOT" "$WORKERD_PORT" "$WORKERD_BIND" "$DAGU_API" "$SCOPE_UID" > "$DAGU_ROOT/workerd/config.capnp.tmp" <<'PY'
+"$PYTHON3" - "$DAGU_ROOT" "$WORKERD_PORT" "$WORKERD_BIND" "$DAGU_API" "$SCOPE_UID" > "$DAGU_ROOT/workerd/config.capnp.tmp" <<'PY'
 import json
 import os
 import sys

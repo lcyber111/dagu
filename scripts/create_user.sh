@@ -202,8 +202,11 @@ if [ -e "$USER_DIR" ]; then
     exit 3
   fi
   if [ ! -d "$USER_DIR/workspace/$PROJECT_PATH" ] || [ ! -f "$USER_DIR/config/opencode.json" ]; then
-    echo "ERROR: existing user directory is incomplete; refusing to overwrite it" >&2
-    exit 3
+    STALE_STAMP=$(date +%Y%m%d-%H%M%S)
+    STALE_TARGET="$ARCHIVE_DIR/stale-$UID_VAL-$STALE_STAMP"
+    mkdir -p "$ARCHIVE_DIR"
+    mv "$USER_DIR" "$STALE_TARGET"
+    echo "create_user: archived incomplete user dir to $STALE_TARGET (recreate proceeds)"
   fi
 fi
 

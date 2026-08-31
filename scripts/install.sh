@@ -240,6 +240,16 @@ WORKERD_LOG=$ROOT/logs/workerd-access.log
 PYTHON3=$PYTHON3
 EOF
 
+# 生成完整 workerd config（基础服务 + 存量用户 App Worker），
+# 避免全新安装只渲染出残缺的模板配置（缺 portal/registry/app-libs 会导致门户 500）
+echo "== [6b/9] generate full workerd config (app_sync) =="
+DAGU_ROOT="$ROOT" \
+  WORKERD_PORT="$WORKERD_PORT" \
+  WORKERD_BIND="$WORKERD_BIND" \
+  WORKERD_BIN="$ROOT/workerd/workerd" \
+  DAGU_API="${DAGU_API#http://}" \
+  bash "$ROOT/scripts/app_sync.sh"
+
 echo "== [7/9] start dagu + init webhooks =="
 cd "$ROOT"
 env \
