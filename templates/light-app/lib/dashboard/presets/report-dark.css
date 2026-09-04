@@ -1,0 +1,51 @@
+/* report-dark — 深色机密研判报告（正式军情/威胁评估） */
+body[data-preset="report-dark"] {
+  --bg: #0b0f17;
+  --bg-soft: #121826;
+  --bg-grad-b: #182132;
+  --primary: #e0b84c;
+  --primary-soft: rgba(224, 184, 76, 0.08);
+  --accent: #7aa2e3;
+  --text: #c6d0e0;
+  --text-bright: #eef3fb;
+  --text-dim: #9aa8bf;
+  --text-muted: #66748a;
+  --text-faint: #3e4a61;
+  --border: rgba(224, 184, 76, 0.18);
+  --border-strong: rgba(224, 184, 76, 0.4);
+  --card-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015));
+}
+body[data-preset="report-dark"] { font-family: 'Segoe UI', 'Helvetica Neue', Arial, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif; }
+body[data-preset="report-dark"] .header { display: none; }
+body[data-preset="report-dark"] .report { max-width: 1060px; margin: 0 auto; padding: 0 26px 40px; }
+body[data-preset="report-dark"] .report-header {
+  text-align: center; padding: 42px 0 22px; margin-bottom: 18px;
+  border-bottom: 1px solid var(--border-strong);
+}
+body[data-preset="report-dark"] .report-title {
+  font-size: 30px; font-weight: 700; color: var(--text-bright); letter-spacing: 2px; line-height: 1.3;
+}
+body[data-preset="report-dark"] .report-subtitle { color: var(--text-muted); font-size: 13px; margin-top: 8px; }
+body[data-preset="report-dark"] .report-meta { color: var(--text-faint); font-size: 12px; margin-top: 12px; }
+body[data-preset="report-dark"] .report-kpis { margin: 18px 0 6px; }
+body[data-preset="report-dark"] .report-kpis .kpi-row { padding: 0; gap: 10px; }
+body[data-preset="report-dark"] .report-kpis .kpi-card { padding: 10px 12px; border-radius: 8px; }
+body[data-preset="report-dark"] .report-kpis .kpi-label { font-size: 10px; }
+body[data-preset="report-dark"] .report-kpis .kpi-value { font-size: 20px; }
+body[data-preset="report-dark"] .report-kpis .kpi-sub { font-size: 10px; }
+body[data-preset="report-dark"] .report-section { margin: 26px 0; }
+body[data-preset="report-dark"] .report-h2 {
+  font-size: 18px; color: var(--primary); font-weight: 700; margin: 0 0 12px;
+  padding: 4px 0 4px 10px; border-left: 4px solid var(--primary); line-height: 1.4;
+}
+body[data-preset="report-dark"] .report-para {
+  color: var(--text); font-size: 14px; line-height: 1.9; margin: 0 0 12px; text-align: justify;
+  font-variant-numeric: tabular-nums;
+}
+body[data-preset="report-dark"] .report-grid { display: grid; gap: 14px; margin: 6px 0 14px; }
+body[data-preset="report-dark"] .report-conclusion .report-para {
+  background: rgba(224, 184, 76, 0.06); border: 1px solid var(--border);
+  border-left: 4px solid var(--accent); border-radius: 8px; padding: 14px 18px;
+}
+body[data-preset="report-dark"] table th,
+body[data-preset="report-dark"] table td { font-variant-numeric: tabular-nums; }

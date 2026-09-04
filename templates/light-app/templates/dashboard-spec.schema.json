@@ -1,0 +1,336 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "dashboard-spec",
+  "description": "大屏声明式 spec 的单一契约源。build_dashboard.py 按此深度校验；html-output.md 由本 Schema 派生，禁止再手写一套。跨字段不变量（如 legend/colors 长度等于序列数）由 build_dashboard.py 的 check_chart_data 与 chart-builders.js 的 assertBarLine 双层兜底（JSON Schema 无法表达字段间比较）。",
+  "type": "object",
+  "required": ["name", "title", "kpis", "charts"],
+  "properties": {
+    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+    "title": { "type": "string", "description": "页眉主标题，一律中文（渲染为 H1 大标题）" },
+    "subtitle": { "type": "string" },
+    "time": { "type": "string" },
+    "refresh": { "type": "integer", "minimum": 1 },
+    "header_icon": { "type": "string" },
+    "header_badge": { "type": "string" },
+    "style": {
+      "type": "string",
+      "enum": ["command", "report-light", "report-dark", "timeline", "terminal", "minimal"],
+      "description": "布局+视觉预设，缺省 command（深色指挥大屏）；按任务性质自动选，见 shared/viz-dark-theme.md"
+    },
+    "report": {
+      "type": "object",
+      "description": "style=report-light/report-dark 时必填：摘要 + 分节(标题+块) + 结论",
+      "properties": {
+        "summary": { "type": "string" },
+        "conclusion": { "type": "string" },
+        "sections": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["title", "blocks"],
+            "properties": {
+              "title": { "type": "string" },
+              "blocks": {
+                "type": "array", "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "anyOf": [
+                    { "required": ["text"], "properties": { "text": { "type": "string" } } },
+                    { "required": ["chart"], "properties": { "chart": { "type": "string" } } },
+                    { "required": ["table"], "properties": { "table": { "type": "string" } } },
+                    { "required": ["row"], "properties": { "row": { "type": "array", "minItems": 1, "items": { "type": "string" } } } },
+                    { "required": ["doc"], "properties": { "doc": { "$ref": "#/definitions/docblock" } } },
+                    { "required": ["docs"], "properties": { "docs": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/docblock" } } } },
+                    { "required": ["cards"], "properties": { "cards": { "$ref": "#/definitions/cardsdef" } } }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "timeline": {
+      "type": "object",
+      "description": "style=timeline 时必填：阶段节点（时间/标题/正文/块）",
+      "properties": {
+        "phases": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["time", "heading"],
+            "properties": {
+              "time": { "type": "string" },
+              "heading": { "type": "string" },
+              "type": { "type": "string", "description": "阶段类型（发现/研判/处置/复盘…）：marker 圆点变色 + 类型 pill + 自动图例" },
+              "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "description": "可选，指定该阶段类型颜色；缺省按调色板自动分配" },
+              "status": { "type": "string", "description": "状态 tag 文案（● 前缀）；缺省颜色按关键词映射，可用 status_color 覆盖" },
+              "status_color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "description": "可选，状态 tag 显式颜色" },
+              "text": { "type": "string" },
+              "blocks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "anyOf": [
+                    { "required": ["text"], "properties": { "text": { "type": "string" } } },
+                    { "required": ["chart"], "properties": { "chart": { "type": "string" } } },
+                    { "required": ["table"], "properties": { "table": { "type": "string" } } },
+                    { "required": ["row"], "properties": { "row": { "type": "array", "minItems": 1, "items": { "type": "string" } } } },
+                    { "required": ["doc"], "properties": { "doc": { "$ref": "#/definitions/docblock" } } },
+                    { "required": ["docs"], "properties": { "docs": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/docblock" } } } },
+                    { "required": ["cards"], "properties": { "cards": { "$ref": "#/definitions/cardsdef" } } }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "theme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "primary": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "background": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "bg_soft": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "accent": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
+      }
+    },
+    "kpis": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": { "type": "string" },
+          "value": {
+            "oneOf": [
+              { "type": "number" },
+              { "type": "string" },
+              { "type": "object", "properties": { "text": { "type": "string" }, "sub": { "type": "string" } } }
+            ]
+          },
+          "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+          "sub": { "type": "string" }
+        }
+      }
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["cells"],
+        "properties": {
+          "grid": { "type": "string" },
+          "cells": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "anyOf": [
+                { "required": ["chart"] },
+                { "required": ["table"] },
+                { "required": ["stack"] },
+                { "required": ["text"] },
+                { "required": ["docs"], "properties": { "title": { "type": "string" }, "docs": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/docblock" } } } },
+                { "required": ["cards"], "properties": { "cards": { "$ref": "#/definitions/cardsdef" } } }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "charts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/chart" }
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "columns", "rows"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "maxHeight": { "type": "number" },
+          "columns": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "rows": { "type": "array", "items": { "type": "array" } },
+          "formatters": { "type": "object" }
+        }
+      }
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "values1d": { "type": "array", "minItems": 1, "items": { "type": "number" } },
+    "values2d": { "type": "array", "minItems": 1, "items": { "type": "array", "minItems": 1, "items": { "type": "number" } } },
+    "docblock": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "title": { "type": "string" },
+        "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "tag": { "type": "string" },
+        "text": { "type": "string" }
+      }
+    },
+    "cardsdef": {
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "title": { "type": "string" },
+        "layout": { "enum": ["vertical", "horizontal"] },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "role": { "type": "string" },
+              "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+              "photo": {
+                "type": "object",
+                "properties": {
+                  "src": { "type": "string" },
+                  "note": { "type": "string" }
+                }
+              },
+              "meta": { "type": "array", "items": { "type": "array", "minItems": 2, "items": { "type": "string" } } }
+            }
+          }
+        }
+      }
+    },
+    "chart": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "enum": ["map", "bar", "line", "pie", "scatter", "radar", "echarts"] },
+        "title": { "type": "string" },
+        "height": { "type": "number" },
+        "header_legend": { "type": "array" },
+        "data": { "type": "object" },
+        "option": { "type": "object" },
+        "js": { "type": "string" }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "bar" } } }, "then": { "$ref": "#/definitions/barline" } },
+        { "if": { "properties": { "type": { "const": "line" } } }, "then": { "$ref": "#/definitions/barline" } },
+        { "if": { "properties": { "type": { "const": "pie" } } }, "then": { "$ref": "#/definitions/pie" } },
+        { "if": { "properties": { "type": { "const": "scatter" } } }, "then": { "$ref": "#/definitions/scatter" } },
+        { "if": { "properties": { "type": { "const": "radar" } } }, "then": { "$ref": "#/definitions/radar" } },
+        { "if": { "properties": { "type": { "const": "map" } } }, "then": { "$ref": "#/definitions/mapchart" } },
+        { "if": { "properties": { "type": { "const": "echarts" } } }, "then": { "oneOf": [{ "required": ["option"] }, { "required": ["js"] }] } }
+      ]
+    },
+    "barline": {
+      "properties": {
+        "data": {
+          "type": "object",
+          "required": ["categories", "values"],
+          "properties": {
+            "categories": { "type": "array", "minItems": 1 },
+            "values": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "anyOf": [{ "type": "number" }, { "type": "array", "minItems": 1, "items": { "type": "number" } }] }
+            },
+            "unit": { "type": "string" },
+            "colors": { "type": "array", "items": { "type": "string" } },
+            "legend": { "type": "array", "items": { "type": "string" } },
+            "rotate": { "type": "number" },
+            "area": { "type": "boolean" },
+            "barWidth": { "type": "string" }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "values": { "type": "array", "items": { "type": "array" } } } },
+              "then": {
+                "required": ["legend"],
+                "properties": { "legend": { "type": "array", "minItems": 1 } }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "pie": {
+      "properties": {
+        "data": {
+          "type": "object",
+          "required": ["values"],
+          "properties": {
+            "values": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["name", "value"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "value": { "type": "number" },
+                  "color": { "type": "string" }
+                }
+              }
+            },
+            "colors": { "type": "array", "items": { "type": "string" } },
+            "radius": { "oneOf": [{ "type": "string" }, { "type": "array" }] },
+            "center": { "type": "array" },
+            "label": { "oneOf": [{ "type": "string" }, { "type": "boolean" }] },
+            "tooltip": { "type": "string" }
+          }
+        }
+      }
+    },
+    "scatter": {
+      "properties": {
+        "data": {
+          "type": "object",
+          "required": ["values"],
+          "properties": {
+            "values": { "type": "array", "minItems": 1, "items": { "type": "array", "minItems": 2 } },
+            "xName": { "type": "string" },
+            "yName": { "type": "string" },
+            "color": { "type": "string" },
+            "symbolSize": { "type": "number" }
+          }
+        }
+      }
+    },
+    "radar": {
+      "properties": {
+        "data": {
+          "type": "object",
+          "required": ["categories", "values"],
+          "properties": {
+            "categories": { "type": "array", "minItems": 1 },
+            "values": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "anyOf": [{ "type": "number" }, { "type": "array", "minItems": 1, "items": { "type": "number" } }] }
+            },
+            "unit": { "type": "string" },
+            "max": { "type": "number" },
+            "colors": { "type": "array", "items": { "type": "string" } },
+            "legend": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "mapchart": {
+      "properties": {
+        "geo": { "type": "object" },
+        "categories": { "type": "object" },
+        "markers": { "type": "array" },
+        "circles": { "type": "array" },
+        "lines": { "type": "array" },
+        "legend": { "type": "array" },
+        "tooltip": { "type": "array" }
+      }
+    }
+  }
+}

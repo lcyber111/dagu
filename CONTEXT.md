@@ -29,7 +29,7 @@
 - 资源参数真实生效：`cpu_limit` → `--cpus`，`memory_limit` → `--memory`，`template_id` → 模板目录选择；`extra_config`（如 `enable_gpu`、`idle_timeout_hours`）本期仅透传记录、不生效。
 - 模板清单 `dagu-gate/templates.yaml`：`template_id → {镜像, workspace 模板路径, opencode 配置模板路径, 默认 cpu/memory}`；默认 `tpl-dev-v2`；模板目录 `/opt/dagu-gate/templates/`，数据沿用 occ2-setup 的 user01（workspace + opencode.json）。
 - 部署形态：单台 Ubuntu 主机、完全离线；Caddy 以容器方式运行（加入 dagu-net），dagu 以进程方式运行（单个静态二进制）；Docker 仅用于 Caddy 和用户容器。
-- 用户访问入口：用户通过 `http://IP:9088/portal/u/{uid}` 进入生成物门户（Caddy 写 `ws_user` Cookie 后 302 到 `/portal`）；门户左侧为 OpenCode 对话、右侧为生成物列表与切换展示。
+- 用户访问入口：用户通过 `http://IP:9088/portal/u/{uid}` 进入生成物门户（Caddy 写 `ws_user` Cookie 后 302 到 `/portal`）；门户左侧为智能体对话（内嵌 opencode Web）、右侧为生成物列表与切换展示。
 - 就绪判定只看 4096（OpenCode Web）；7010 相关（Python 静态服务 `serve_html.py`）不再使用。
 - 容器管理直接用 `docker run` / `docker rm` 命令，不写 compose 文件。
 - 空闲判定：最后活动时间 = max(活动日志中该 uid 的最后请求时间, 容器创建时间 CreatedAt)；阈值默认 360 分钟（6 小时），走 env（`IDLE_TIMEOUT_MINUTES`、`REAP_CRON`、`STOP_TIMEOUT`、`START_PAGE_REFRESH`）。

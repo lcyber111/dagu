@@ -358,10 +358,65 @@ AUDIT_CRON="*/5 * * * *"    # 审计汇总
 - 大屏页面运行时拉取 /svc/spec 渲染、轮询兜底 30s、/svc/events（SSE）实时推送；跨请求广播依赖 Hub DO Hibernation。
 ### 生成物门户（/portal）
 
-- 入口：http://IP:9088/portal（带会话 Cookie）；左侧固定 OpenCode 对话（可折叠），右侧生成物列表 + 切换展示（同一时间显示一个）。
+- 入口：http://IP:9088/portal（带会话 Cookie）；左侧固定「智能体对话」（内嵌 opencode Web，可折叠），右侧生成物列表 + 切换展示（同一时间显示一个）。
 - 数据源：GET /app/v1/list（uid 鉴权；返回 title/description/createdAt/type/版本/状态[探活]）。
 - 交互：点卡片切换展示（旧 iframe 销毁）；新标签打开、删除（归档）、刷新；列表 5s 轮询，空闲时自动选中最新生成物。
 - 静态资产：$DAGU_ROOT/portal/（index.html/app.js/app.css），由网关经 disk 绑定托管，改文件即时生效。
 - 生成物元数据（agent 生成时写入 pps.json）：	itle、description、createdAt、	ype（默认 dashboard）；门户自动补版本/端口/状态/最近同步时间。- 交互增强：左右面板**分隔条可拖拽**调比例（15%–85%，Pointer 捕获 + 全屏遮罩防 iframe 抢事件，记忆到 localStorage）；折叠对话为 CSS 隐藏保留会话。
 - **选中标记**：点选卡片后网关经 dagu `app_select` DAG 写 `users/<uid>/workspace/.apps/.selected`，agent 据此知道用户当前看哪个生成物（SOP：改当前大屏前先读它）。
 - **发布自动刷新**：`app_sync` 每次发布写 manifest `_meta.lastPublish`，门户检测变化自动重载预览。
+
+## 轻应用（light-app）解耦与模板组装
+
+### 目录形态（version0802 级）
+
+```
+workspace/version0802/
+├── agents_gen/     # 同事独立维护（git 仓库，sync_upstream.sh 只同步这里）
+├── AGENTS.md       # 平台硬性路由：生成/修改大屏必须走 light-app SOP（禁止 serve_html/FBQ 静态流程）
+└── light-app/      # 轻应用层（平台维护，与 agents_gen 物理隔离）
+      ├── sop/                # app-worker.md（主流程）/ modify.md / sync.md
+      ├── app-scaffold/       # worker.js.tpl / www/index.html / apps.json.example
+      ├── scripts/            # build_dashboard.py / validate_runtime.py / sync_merge.py.tpl 等
+      ├── lib/dashboard/      # 运行时 JS（dashboard.js/interactive.js 等，app-libs 同步源）
+      └── templates/          # dashboard-spec.schema.json（spec 契约）
+```
+
+### 组装与打包
+
+同事更新 `agents_gen` 后，重新组装模板（仓库内提供脚本）：
+
+```bash
+# 取同事最新 agents_gen（git 或拷贝均可，不含 .git）
+bash scripts/assemble_template.sh <agents_gen 目录> deploy/templates/tpl-dev-v2.tar.gz
+```
+
+产物结构：`tpl-dev-v2/{opencode.json, workspace/version0802/{agents_gen, AGENTS.md, light-app}}`。
+
+### 运行时 JS 与 app-libs
+
+轻应用页面加载的 `lib/...` 来自宿主 `app-libs`（workerd disk 绑定），与 workspace 模板的
+`lib/` 是两份。`light-app/lib/dashboard/` 是运行时 JS 的唯一真相源，安装/升级后执行：
+
+```bash
+bash scripts/sync_app_libs.sh $DAGU_ROOT
+```
+
+### 与同事更新的关系
+
+- SOP 文档 / 技能 / references / 非大屏功能：同事 agents_gen 更新自动生效，零处理；
+- 生成大屏相关代码（build_dashboard.py / dashboard.js / interactive.js / schema）：
+  同事更新后需人工合并进 light-app（例行检查，冲突面小）。
+
+## 本版本（2026-09-02）关键变更与升级
+
+- **workerd 必须以 `--watch` 启动**：app_sync 改配置后热加载、workerd_guard 按此守护；
+  install.sh / workerd_guard.sh 已修复（不带 --watch 会导致新发布应用不绑定 + 9090 冲突）。
+- **发布网关地址注入**：`create_user.sh` 与 `sync_light_app.sh` 为用户写
+  `/workspace/.platform/gateway.json`（含 `internalBaseUrl`=容器内 API 用 + `baseUrl`=公网汇报用）；
+  SOP/sync_merge 优先读它，不再依赖同事 `agents_gen/config/server.json`。
+- **存量用户同步脚本**：`scripts/sync_light_app.sh` 把 light-app/AGENTS.md/opencode.json/
+  gateway.json 同步到存量用户（只增不覆盖，agents_gen/user_space/.apps 零接触）。
+- **产物暂存区**：生成中间产物落 `/workspace/light-app-work/`（`OUT_BASE`），在 agents_gen 之外。
+- **jsonschema 内置**：用户容器镜像无 jsonschema，light-app/scripts/vendor 内置纯 Python 副本。
+- 存量机器升级（含 .234 实测流程）见 `deploy/MIGRATION.md` 的「B. 存量升级」。

@@ -1,0 +1,28 @@
+/* terminal — 荧光绿等宽终端风（技术/数据/工具/日志） */
+body[data-preset="terminal"] {
+  --bg: #050a07;
+  --bg-soft: #08120c;
+  --bg-grad-b: #0a1810;
+  --primary: #37ff6a;
+  --primary-soft: rgba(55, 255, 106, 0.08);
+  --accent: #37ff6a;
+  --text: #a8d8b0;
+  --text-bright: #d6ffe0;
+  --text-dim: #6fc383;
+  --text-muted: #4f7d5d;
+  --text-faint: #2f4d39;
+  --border: rgba(55, 255, 106, 0.16);
+  --border-strong: rgba(55, 255, 106, 0.4);
+  --card-bg: rgba(6, 16, 10, 0.7);
+}
+body[data-preset="terminal"] { font-family: 'Consolas', 'Courier New', monospace; }
+body[data-preset="terminal"] .header { border-bottom: 1px dashed var(--border-strong); border-radius: 0; background: var(--bg-soft); }
+body[data-preset="terminal"] .header h1 span { text-shadow: 0 0 8px rgba(55, 255, 106, 0.35); }
+body[data-preset="terminal"] .header .badge { border-radius: 0; border-style: dashed; }
+body[data-preset="terminal"] .header-logo { border-radius: 0; border-style: dashed; }
+body[data-preset="terminal"] .card { border-radius: 0; border: 1px solid var(--border); box-shadow: none; }
+body[data-preset="terminal"] .card:hover { border-color: var(--border-strong); }
+body[data-preset="terminal"] .kpi-card { border-radius: 0; }
+body[data-preset="terminal"] .kpi-card:hover { border-color: var(--border-strong); }
+body[data-preset="terminal"] .kpi-value { text-shadow: 0 0 10px rgba(55, 255, 106, 0.3); }
+body[data-preset="terminal"] .tag { border-radius: 0; }

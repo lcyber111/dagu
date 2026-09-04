@@ -1,0 +1,48 @@
+/* timeline — 深色时间线叙事（事件复盘/航迹/过程演进），继承默认深色变量 */
+body[data-preset="timeline"] .timeline {
+  max-width: 980px; margin: 0 auto; padding: 22px 30px 34px 46px; position: relative;
+}
+body[data-preset="timeline"] .timeline::before {
+  content: ''; position: absolute; left: 20px; top: 6px; bottom: 6px;
+  width: 2px; background: linear-gradient(var(--primary), var(--border-strong));
+}
+body[data-preset="timeline"] .timeline-item { position: relative; padding: 0 0 22px 40px; }
+body[data-preset="timeline"] .timeline-marker {
+  position: absolute; left: 12px; top: 18px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--bg); border: 3px solid var(--primary);
+  box-shadow: 0 0 12px var(--primary-soft);
+}
+body[data-preset="timeline"] .timeline-card {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px 10px; backdrop-filter: blur(6px); transition: border-color .3s;
+}
+body[data-preset="timeline"] .timeline-card:hover { border-color: var(--border-strong); }
+body[data-preset="timeline"] .timeline-head {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap;
+}
+body[data-preset="timeline"] .timeline-time {
+  font-family: 'Consolas', monospace; font-size: 12px; font-weight: 700; color: var(--primary);
+}
+body[data-preset="timeline"] .timeline-heading { font-size: 15px; font-weight: 600; color: var(--text-bright); }
+
+/* 阶段类型图例（自动生成） */
+body[data-preset="timeline"] .timeline-legend {
+  display: flex; gap: 18px; flex-wrap: wrap; margin: 0 0 16px; padding: 10px 14px;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px;
+}
+body[data-preset="timeline"] .timeline-legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-dim); }
+body[data-preset="timeline"] .timeline-legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+
+/* 阶段类型 pill + 状态 tag（颜色由构建脚本内联注入） */
+body[data-preset="timeline"] .timeline-type {
+  font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 10px; border: 1px solid;
+}
+body[data-preset="timeline"] .timeline-status { font-size: 11px; font-weight: 700; }
+
+body[data-preset="timeline"] .report-para {
+  color: var(--text-dim); font-size: 13px; line-height: 1.8; margin: 0 0 10px;
+}
+body[data-preset="timeline"] .report-grid { display: grid; gap: 10px; margin: 4px 0 10px; }
+body[data-preset="timeline"] .timeline-card .card { border: 1px solid var(--border); }
+body[data-preset="timeline"] .timeline-card .grid-row { padding: 0 0 8px; }
+body[data-preset="timeline"] .timeline-card .stack { gap: 10px; }

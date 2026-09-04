@@ -60,7 +60,7 @@ ADMIN_USER="${DAGU_ADMIN_USER:-admin}"
 ADMIN_PASS="${DAGU_ADMIN_PASS:-dagu-gate-2026}"
 OPENCODE_IMAGE_TAR="${OPENCODE_IMAGE_TAR:-/home/li/dagu/opencode-1.17.10-custom-nods-python-pandas.tar.gz}"
 CADDY_IMAGE_TAR="${CADDY_IMAGE_TAR:-/home/li/dagu/caddy.2.11.4.tar}"
-DAGU_API="${DAGU_API:-http://172.17.0.1:18080}"
+DAGU_API="${DAGU_API:-172.17.0.1:18080}"
 IDLE_TIMEOUT_MINUTES="${IDLE_TIMEOUT_MINUTES:-360}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-30}"
 START_PAGE_REFRESH="${START_PAGE_REFRESH:-5}"
@@ -138,11 +138,11 @@ mkdir -p "$ROOT/templates"
 if [ ! -d "$ROOT/templates/tpl-dev-v2/workspace" ]; then
   tar -xzf "$ROOT/templates/tpl-dev-v2.tar.gz" -C "$ROOT/templates/"
 fi
-# App Worker 共享前端资产（lib/dashboard、echarts 等），供所有 App Worker 经 disk 绑定读取
-if [ -d "$ROOT/templates/tpl-dev-v2/workspace/version0802/agents_gen/lib" ]; then
-  mkdir -p "$ROOT/app-libs"
-  cp -a "$ROOT/templates/tpl-dev-v2/workspace/version0802/agents_gen/lib/." "$ROOT/app-libs/"
-  echo "installed app-libs (shared dashboard assets)"
+# App Worker 共享前端资产：light-app/lib 是唯一真相源（dashboard + echarts/
+# echarts-maps/fontawesome/chartjs/markdown），全量同步到宿主 app-libs 供 disk 绑定读取。
+# 不再从 agents_gen/lib 种入（同事目录 gitignored/随时变化，不能决定渲染依赖）。
+if [ -d "$ROOT/templates/tpl-dev-v2/workspace/version0802/light-app/lib/dashboard" ]; then
+  bash "$ROOT/scripts/sync_app_libs.sh" "$ROOT"
 fi
 # 生成物门户静态页（由网关 workerd 经 disk 绑定托管）
 if [ -d "$PKG_ROOT/templates/portal" ]; then
@@ -310,7 +310,9 @@ echo "gateway env written to $ROOT/gateway/.env"
 
 echo "== [8/9] start workerd (control plane) =="
 cd "$ROOT"
-nohup "$ROOT/workerd/workerd" serve "$ROOT/workerd/config.capnp" \
+# 必须用 --watch：app_sync 改 config.capnp 后热加载生效；workerd_guard 也按此模式守护。
+# 若不带 --watch，app_sync 发布的新 app 不会绑定，workerd_guard 会误判进程缺失而反复拉起导致 9090 bind 冲突。
+nohup "$ROOT/workerd/workerd" serve --watch workerd/config.capnp \
   > "$ROOT/logs/workerd-access.log" 2>&1 &
 echo $! > "$ROOT/workerd/workerd.pid"
 

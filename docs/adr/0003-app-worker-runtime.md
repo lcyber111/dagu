@@ -322,7 +322,7 @@ preview 为主题/图片预览、链接一律新标签页打开）。结论：M2
 
 ## 生成物门户（/portal，2026-08-24 定稿并实测；2026-08-27 路由重构后入口为 /portal）
 
-- **形态**：左侧固定 OpenCode 对话（可折叠，CSS 隐藏保留会话；分隔条可拖拽调比例 15%–85%，Pointer 捕获 + 全屏遮罩防 iframe 抢事件，比例记忆 localStorage）；右侧生成物画廊 + 切换展示区（同一时间一个，切换销毁旧 iframe）。
+- **形态**：左侧固定「智能体对话」面板（内嵌 opencode Web，可折叠，CSS 隐藏保留会话；分隔条可拖拽调比例 15%–85%，Pointer 捕获 + 全屏遮罩防 iframe 抢事件，比例记忆 localStorage）；右侧生成物画廊 + 切换展示区（同一时间一个，切换销毁旧 iframe）。
 - **生成物语义**：每个生成物 = 一个 App Worker（后端 CRUD + 前端 HTML + SQLite），manifest 元数据 title/description/createdAt/type（agent 声明），门户自动补版本/端口/状态（轻量探活）/最近同步时间。
 - **选中→修改闭环**：点卡片 → 网关 PUT /app/v1/select → dagu pp_select DAG 写 .apps/.selected；agent 改当前大屏前读标记 → 改 www/ 或新版本 → 发布（app_sync）→ _meta.lastPublish 更新 → 门户自动刷新预览。
 - **交互**：默认选中最近生成物（正在看的不打断）；空态引导；删除（归档，二次确认）；新标签打开；列表 5s 轮询。

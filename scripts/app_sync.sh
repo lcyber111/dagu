@@ -24,6 +24,9 @@ DAGU_ROOT="${DAGU_ROOT:-$(dirname "$SCRIPT_DIR")}"
 WORKERD_PORT="${WORKERD_PORT:-9090}"
 WORKERD_BIND="${WORKERD_BIND:-172.17.0.1}"
 DAGU_API="${DAGU_API:-172.17.0.1:18080}"
+# 兼容带 http:// 前缀的 DAGU_API（install.sh 的 env 默认即带前缀），
+# 避免把 scheme 写进 capnp 的 daguServer address 导致 workerd DNS 解析失败
+DAGU_API="${DAGU_API#http://}"
 WORKERD_BIN="${WORKERD_BIN:-$DAGU_ROOT/workerd/workerd}"
 if [ ! -x "$WORKERD_BIN" ]; then
   WORKERD_BIN="$(command -v workerd || true)"

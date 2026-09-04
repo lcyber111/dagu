@@ -1,0 +1,25 @@
+/* minimal — 极简浅色卡片（参考/对比/清单/百科） */
+body[data-preset="minimal"] {
+  --bg: #fafbfc;
+  --bg-soft: #ffffff;
+  --bg-grad-b: #ffffff;
+  --primary: #2f6fdb;
+  --primary-soft: rgba(47, 111, 219, 0.06);
+  --accent: #d97706;
+  --text: #33363b;
+  --text-bright: #16181c;
+  --text-dim: #4b5563;
+  --text-muted: #6b7280;
+  --text-faint: #9ca3af;
+  --border: #e5e7eb;
+  --border-strong: #cbd5e1;
+  --card-bg: #ffffff;
+}
+body[data-preset="minimal"] .header { background: #ffffff; border-bottom: 1px solid var(--border); }
+body[data-preset="minimal"] .header h1 { font-weight: 600; letter-spacing: 0; }
+body[data-preset="minimal"] .header .badge { background: #eef4ff; border-color: #d6e2fb; color: var(--primary); }
+body[data-preset="minimal"] .card { border-radius: 10px; border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(16, 24, 40, 0.05); }
+body[data-preset="minimal"] .kpi-card { border-radius: 10px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }
+body[data-preset="minimal"] .kpi-value { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; }
+body[data-preset="minimal"] .card-header h3 { color: var(--text-dim); }
+body[data-preset="minimal"] th { background: #f3f4f6; }

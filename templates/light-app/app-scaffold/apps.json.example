@@ -1,0 +1,19 @@
+{
+  "apps": [
+    {
+      "id": "carrier-demo",
+      "port": 20011,
+      "defaultVersion": "v1",
+      "versions": {
+        "v1": {
+          "title": "航母态势 v1",
+          "sync": {
+            "db": "doris",
+            "sql": "SELECT hull_number AS id, status AS value FROM standard.kantian_aircraft_carrier_status"
+          }
+        },
+        "v2": { "title": "航母态势 v2" }
+      }
+    }
+  ]
+}

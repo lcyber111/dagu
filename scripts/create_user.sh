@@ -248,6 +248,14 @@ PYEOF
 mv "$TMP_DIR" "$USER_DIR"
 CREATED_USER_DIR=true
 
+# 注入平台网关地址（轻应用发布用，与 agents_gen/config/server.json 解耦；
+# baseUrl=公网地址（对外链接）；internalBaseUrl=容器内可达的网关地址（API 调用，
+# 默认 dagu-net 内 caddy-gateway，可用 GATEWAY_INTERNAL_BASE_URL 覆盖）
+mkdir -p "$USER_DIR/workspace/.platform"
+cat > "$USER_DIR/workspace/.platform/gateway.json" <<EOF
+{"baseUrl": "$GATEWAY_PUBLIC_BASE_URL", "internalBaseUrl": "${GATEWAY_INTERNAL_BASE_URL:-http://caddy-gateway:9088}", "uid": "$UID_VAL"}
+EOF
+
 # ---- docker run ----
 CREATED_CONTAINER=true
 docker run -d \

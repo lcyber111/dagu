@@ -158,7 +158,7 @@ curl -i http://192.168.252.131:9088/portal/u/usr_test01
 # → workerd → 302，响应头：Location: /portal 和 Set-Cookie: ws_user=usr_test01
 
 curl -i http://192.168.252.131:9088/portal
-# → workerd → 门户页（左侧 OpenCode 对话 + 右侧生成物画廊）
+ # → workerd → 门户页（左侧智能体对话 + 右侧生成物画廊）
 ```
 
 ### 规则 3：带 `ws_user` Cookie → 进容器（核心规则）

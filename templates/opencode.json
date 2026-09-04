@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": ["ds"],
+  "small_model": "ds/deepseek-v4-flash",
+  "disabled_providers": [],
+  "default_agent": "agent-generator",
+  "agent": {
+    "build": { "disable": false },
+    "plan": { "disable": false },
+    "general": { "disable": false },
+    "explore": { "disable": false }
+  },
+  "provider": {
+    "ds": {
+      "name": "vllm-deepseek",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://api.deepseek.com",
+        "apiKey": "sk-c2d452c996ea4c1583c9145f78c0b3be"
+      },
+      "models": {
+        "deepseek-v4-flash": {
+          "name": "deepseek-v4-flash"
+        }
+      }
+    }
+  }
+}
